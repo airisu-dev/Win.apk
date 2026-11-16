@@ -465,6 +465,12 @@ set_source_files_properties(launcher/launcher.rc PROPERTIES COMPILE_DEFINITIONS 
 target_include_directories(winapk-launcher PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/launcher")
 message(STATUS "Win.apk version ${WINAPK_VERSION_TEXT}")
 target_compile_definitions(winapk-launcher PRIVATE UNICODE _UNICODE _WIN32_WINNT=0x0A00 WINVER=0x0A00)
+# Where the update check, Report a problem and the project page go; CI passes ${{ github.repository }}.
+set(WINAPK_REPO "israel2176/win.apk" CACHE STRING "Win.apk's GitHub repository, owner/name")
+if(NOT WINAPK_REPO MATCHES "^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
+  message(FATAL_ERROR "WINAPK_REPO must look like owner/name, not '${WINAPK_REPO}'")
+endif()
+target_compile_definitions(winapk-launcher PRIVATE "WINAPK_REPO=\"${WINAPK_REPO}\"")
 target_link_options(winapk-launcher PRIVATE -municode -static)
 target_link_libraries(winapk-launcher PRIVATE comctl32 shell32 ole32 uuid gdiplus dwmapi uxtheme gdi32 winhttp bcrypt crypt32)
 
