@@ -1,4 +1,4 @@
-// gl_present.h -- GL frames to the window without a readback (WINAPK_GL_PRESENT=gpu).
+// gl_present.h -- GL frames to the window without a readback (on by default; WINAPK_GL_PRESENT, GpuPresent).
 //
 // The GL frame (the content GL view's or a native window's pbuffer) is copied
 // on the GPU into a DirectComposition swap chain; the view tree and each
@@ -11,6 +11,8 @@
 namespace winapk::host {
 
 bool gl_present_wanted();
+// WINAPK_GL_PRESENT=gpu: on even on a software renderer.
+bool gl_present_forced();
 bool gl_present_active();
 void gl_present_stop();
 

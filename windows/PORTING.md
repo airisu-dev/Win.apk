@@ -807,14 +807,14 @@ Still open:
   framework call sites, `DisplayConfig.compute` keeps the density on purpose,
   and the relaunch path (`MACAPK_RESIZE_RELAUNCH`) is off and untried on
   native engines; a live density change needs those first.
-- By default the window is painted with GDI from a readback of every frame
-  (the GL views and the app's native frames included) and DWM composites it:
-  no tearing, but a copy per frame and no vsync. `WINAPK_GL_PRESENT=gpu`
-  (`host/gl/gl_present.h`, experimental) skips the readback: GL frames are
-  copied on the GPU into DirectComposition swap chains, with the view tree
-  and SurfaceView frames as layers of their own, and the tick follows the
-  display's refresh and vblank. Off by default until it has run on more GPUs
-  than one; CI's runners have none.
+- On a GPU, GL frames are copied on the GPU into DirectComposition swap
+  chains (`host/gl/gl_present.h`), with the view tree and SurfaceView frames
+  as layers of their own, and the tick follows the display's refresh and
+  vblank. Without one (WARP, SwiftShader), with the setting off ("Draw apps
+  with the graphics card", `GpuPresent`) or `WINAPK_GL_PRESENT=readback`,
+  the window is painted with GDI from a readback of every frame and DWM
+  composites it: no tearing, but a copy per frame and no vsync. CI's runners
+  have no GPU, so only the readback path runs there.
 - An invalidation costs a redraw, a copy and a blit of the whole window: one
   small animating view (a spinner, a caret, a pulsing hint) is a whole-window
   frame 60 times a second. Partial redraw (`MACAPK_FRAMESPEED_DAMAGE=1`;
@@ -1001,8 +1001,8 @@ on first use, so the runtime still starts without it.
 The framework context is ANGLE on Direct3D 11, falling back to WARP and then
 to SwiftShader (`WINAPK_ANGLE_BACKEND=d3d11|swiftshader` forces one). Each GL
 view renders into its own pbuffer; after a frame the pixels are read back and
-shown, with the Java UI composited on top as the overlay layer. With
-`WINAPK_GL_PRESENT=gpu` the pbuffer's D3D11 texture (its share handle) is
+shown, with the Java UI composited on top as the overlay layer. On a GPU
+(the default, `host/gl/gl_present.h`) the pbuffer's D3D11 texture (its share handle) is
 copied on the GPU into a DirectComposition swap chain over the window
 instead, and the Java UI is a premultiplied layer above it
 (`host/gl/gl_present.cpp`).

@@ -222,6 +222,11 @@ const wchar_t* tr(const wchar_t* en) {
         {L"Speed up ARM apps", L"האצת אפליקציות ARM"},
         {L"Translates ARM code to your PC's code in the background so apps run faster. Runs at low priority.",
          L"ממיר ברקע קוד ARM לקוד של המחשב, כדי שהאפליקציות ירוצו מהר יותר. פועל בעדיפות נמוכה."},
+        {L"Draw apps with the graphics card", L"ציור אפליקציות בכרטיס הגרפי"},
+        {L"Games, video and app screens go to the window through the graphics card, at your display's refresh "
+         L"rate. Turn it off if an app shows a black or frozen picture. Applies to apps opened next.",
+         L"משחקים, וידאו ומסכי אפליקציות מוצגים בחלון דרך הכרטיס הגרפי, בקצב הרענון של המסך. כדאי לכבות אם "
+         L"אפליקציה מציגה תמונה שחורה או קפואה. חל על אפליקציות שייפתחו מעכשיו."},
         {L"Performance", L"ביצועים"},
         {L"Optimizing for this PC…", L"מבצע אופטימיזציה למחשב הזה…"},
         {L"{0} of {1} parts", L"{0} מתוך {1} חלקים"},
@@ -6318,6 +6323,15 @@ std::vector<Section> settings_sections() {
                     L"priority.");
     aot.on = setting(L"AotBackground", 1) != 0;
     aot.act = [](int on) { set_setting(L"AotBackground", static_cast<DWORD>(on)); };
+    // Read by the runtime when an app opens (host/gl/gl_present.cpp, gl_present_wanted).
+    Row gpu;
+    gpu.kind = Row::kToggle;
+    gpu.title = tr(L"Draw apps with the graphics card");
+    gpu.detail = tr(L"Games, video and app screens go to the window through the graphics card, at your display's "
+                    L"refresh rate. Turn it off if an app shows a black or frozen picture. Applies to apps opened "
+                    L"next.");
+    gpu.on = setting(L"GpuPresent", 1) != 0;
+    gpu.act = [](int on) { set_setting(L"GpuPresent", static_cast<DWORD>(on)); };
     Row desktop;
     desktop.kind = Row::kToggle;
     desktop.title = tr(L"Desktop shortcut for new apps");
@@ -6333,7 +6347,7 @@ std::vector<Section> settings_sections() {
                            [] { register_file_types(true); });
     }
     // Nothing is translated on ARM64.
-    std::vector<Row> apps_rows = {size, orient, folders, aot, desktop, types};
+    std::vector<Row> apps_rows = {size, orient, folders, aot, gpu, desktop, types};
     if (WINAPK_HOST_ARM64) apps_rows.erase(apps_rows.begin() + 3);
     out.push_back({tr(L"Apps"), std::move(apps_rows), L""});
 

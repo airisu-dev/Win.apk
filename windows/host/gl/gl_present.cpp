@@ -101,7 +101,17 @@ bool setup() {
     IDXGIAdapter* adapter = nullptr;
     HRESULT hr = g_device->QueryInterface(__uuidof(IDXGIDevice), reinterpret_cast<void**>(&dxgi));
     if (SUCCEEDED(hr)) hr = dxgi->GetAdapter(&adapter);
-    if (SUCCEEDED(hr)) hr = adapter->GetParent(__uuidof(IDXGIFactory2), reinterpret_cast<void**>(&g_factory));
+    if (SUCCEEDED(hr)) {
+        // WARP (Microsoft Basic Render Driver) copies on the CPU anyway.
+        DXGI_ADAPTER_DESC desc{};
+        if (!gl_present_forced() && SUCCEEDED(adapter->GetDesc(&desc)) && desc.VendorId == 0x1414 &&
+            desc.DeviceId == 0x8c) {
+            release(adapter);
+            release(dxgi);
+            return fail("a software renderer");
+        }
+        hr = adapter->GetParent(__uuidof(IDXGIFactory2), reinterpret_cast<void**>(&g_factory));
+    }
     if (SUCCEEDED(hr)) {
         hr = DCompositionCreateDevice(dxgi, __uuidof(IDCompositionDevice), reinterpret_cast<void**>(&g_dcomp));
     }
@@ -242,10 +252,25 @@ void stop_locked() {
 
 }  // namespace
 
+// WINAPK_GL_PRESENT=gpu forces the GPU layers on (a software renderer too),
+// =readback off; otherwise the launcher's Settings switch (GpuPresent,
+// default on), and on a software renderer they stay off (setup).
+bool gl_present_forced() {
+    static const bool yes = [] {
+        const char* e = std::getenv("WINAPK_GL_PRESENT");
+        return e && std::strcmp(e, "gpu") == 0;
+    }();
+    return yes;
+}
+
 bool gl_present_wanted() {
     static const bool on = [] {
         const char* e = std::getenv("WINAPK_GL_PRESENT");
-        return e && std::strcmp(e, "gpu") == 0;
+        if (e && *e) return std::strcmp(e, "gpu") == 0;
+        DWORD v = 1, size = sizeof v;
+        return !(RegGetValueW(HKEY_CURRENT_USER, L"Software\\Win.apk", L"GpuPresent", RRF_RT_REG_DWORD, nullptr, &v,
+                              &size) == ERROR_SUCCESS &&
+                 v == 0);
     }();
     return on;
 }

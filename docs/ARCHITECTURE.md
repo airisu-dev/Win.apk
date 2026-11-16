@@ -488,8 +488,9 @@ checked against its SHA-256.
 
 Each GL view renders into its own pbuffer; after a frame the pixels are read
 back and composited with the Java view tree, which is drawn in software.
-With `WINAPK_GL_PRESENT=gpu` (experimental, `host/gl/gl_present.h`) nothing is
-read back: the pbuffer's texture, a GL view's or one behind `eglSwapBuffers`,
+By default on a GPU (`host/gl/gl_present.h`; Settings > Apps > "Draw apps
+with the graphics card", `WINAPK_GL_PRESENT=readback|gpu`) nothing is read
+back: the pbuffer's texture, a GL view's or one behind `eglSwapBuffers`,
 is copied on the GPU into a DirectComposition swap chain over the window; the
 view tree and each SurfaceView's lockCanvas frames are layers of their own,
 and the render tick runs at the display's refresh rate, after its vblank.
