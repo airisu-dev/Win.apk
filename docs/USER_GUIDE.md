@@ -623,6 +623,7 @@ Environment variables the launcher and the runtime read:
 | `WINAPK_ALLOW_SECOND_INSTANCE=1` | Allow a second copy of a running app |
 | `WINAPK_WEBVIEW2=0` | Do not use WebView2; web links open in the system browser |
 | `WINAPK_ANGLE_BACKEND=d3d11` or `swiftshader` | Force a graphics backend |
+| `WINAPK_GL_PRESENT=gpu` | Experimental: show apps' OpenGL frames, video and the app's views through the GPU instead of copying every frame, and follow the display's refresh rate (up to 120 Hz and beyond). Needs a GPU on Direct3D 11 |
 | `WINAPK_PROXY=socks5://host:port` | A SOCKS proxy for the push (Firebase Cloud Messaging) connection |
 | `WINAPK_CDS=0` | Start the Java runtime without class-data sharing, as Win.apk 0.8 did (slower; for comparing, or if a start fails with `[cds]` lines in its log) |
 | `WINAPK_HEADLESS=1` | Run without a window, for tests |
