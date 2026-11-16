@@ -107,6 +107,8 @@ page's Permissions rows, which stop a running app on revoke), single instance
   CMake's `WINAPK_VERSION` (the release workflow passes its tag; `ci.yml` the newest
   release tag + `-dev.<run>`, which the update check counts as that release) writes
   `winapk_version.h`. The update check compares it with the newest release's tag.
+- The GitHub repository (releases, issues, project page) is `WINAPK_REPO`
+  (CMake's `-DWINAPK_REPO=owner/name`; the workflows pass `github.repository`).
 - Settings > Google account asks `winapk-runtime --gms accounts|signin-window|signout`
   (`run_gms`, stdout captured, stderr in `logs\gms.log`); exit codes 0 done,
   1 error, 2 cancelled.

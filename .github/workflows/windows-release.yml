@@ -46,7 +46,8 @@ jobs:
         run: |
           cmake -S windows -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_COMPILER=clang++ \
             -DWINAPK_JNI_INCLUDE="$(cygpath -u "$JAVA_HOME")/include" \
-            -DWINAPK_VERSION="${{ inputs.tag }}"
+            -DWINAPK_VERSION="${{ inputs.tag }}" \
+            -DWINAPK_REPO="${{ github.repository }}"
           cmake --build build
       - uses: actions/cache@v4
         with:
@@ -107,7 +108,8 @@ jobs:
         run: |
           cmake -S windows -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_COMPILER=clang++ \
             -DWINAPK_JNI_INCLUDE="$(cygpath -u "$JAVA_HOME")/include" -DWINAPK_ARM64_JIT=ON \
-            -DWINAPK_VERSION="${{ inputs.tag }}"
+            -DWINAPK_VERSION="${{ inputs.tag }}" \
+            -DWINAPK_REPO="${{ github.repository }}"
           cmake --build build
       - uses: actions/cache@v4
         with:

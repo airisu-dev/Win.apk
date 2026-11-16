@@ -84,6 +84,10 @@ windows/scripts/bake_jre.sh "$JAVA_HOME" runtime/lib runtime/jre
   the newest release. The release workflow passes its tag; `ci.yml` passes the
   newest release tag + `-dev.<run>` (the update check reads it as that release,
   so a CI build is not offered the release it came after); the default is 0.1.0.
+- `-DWINAPK_REPO=owner/name` is the GitHub repository the launcher's update
+  check, Report a problem and project page use. Both workflows pass
+  `${{ github.repository }}`, so a fork's builds point at the fork; the
+  default is `israel2176/win.apk`.
 - `stage_runtime.sh <build dir> [out]` assembles a runnable folder (default
   `windows/build/runtime`): `Win.apk.exe`, `bin/` (the runtime, the
   translator and stub DLL, `winapk-aot`, ANGLE from `fetch_angle.sh`,

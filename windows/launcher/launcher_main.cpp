@@ -99,6 +99,12 @@
 #include "../include/winapk/aot_stamp.h"
 #include "../include/winapk/arch.h"
 
+// The GitHub repository (owner/name) of the releases, issues and project page: CMake's WINAPK_REPO, which CI
+// sets to the repository it builds in.
+#ifndef WINAPK_REPO
+#define WINAPK_REPO "israel2176/win.apk"
+#endif
+
 namespace fs = std::filesystem;
 
 namespace {
@@ -2230,8 +2236,8 @@ DWORD WINAPI download_thread(void* param) {
 // a check that finds nothing new costs GitHub a 304, and the library shows the
 // last result at start without asking again within the day.
 
-constexpr wchar_t kReleasesUrl[] = L"https://api.github.com/repos/israel2176/win.apk/releases?per_page=20";
-constexpr wchar_t kReleasesPage[] = L"https://github.com/israel2176/win.apk/releases";
+constexpr wchar_t kReleasesUrl[] = L"https://api.github.com/repos/" WINAPK_REPO "/releases?per_page=20";
+constexpr wchar_t kReleasesPage[] = L"https://github.com/" WINAPK_REPO "/releases";
 constexpr wchar_t kSetupAsset[] = L"Win.apk-Setup.exe";             // x64
 constexpr wchar_t kSetupAssetArm64[] = L"Win.apk-Setup-arm64.exe";  // ARM64 (winapk.iss, Arch=arm64)
 
@@ -4266,7 +4272,7 @@ void error_with_log(const std::wstring& main, const std::wstring& content, const
 // newest crash dump) selected to drag in. Nothing is uploaded by itself: a log can hold the user's name and paths,
 // so what goes in the report is the user's choice. The log stays out of the URL too, which GitHub cuts at about 8 KB.
 
-constexpr wchar_t kIssuesUrl[] = L"https://github.com/israel2176/win.apk/issues";
+constexpr wchar_t kIssuesUrl[] = L"https://github.com/" WINAPK_REPO "/issues";
 
 // A query value: UTF-8, everything but the unreserved characters percent-encoded.
 std::wstring url_escape(const std::wstring& s) {
@@ -6247,7 +6253,7 @@ std::vector<Section> update_sections() {
         out.push_back({fmt(L"What's new in {0}", {r.version}),
                        {text_row(dated ? fmt(L"Released {0}", {long_date(r.published)}) : tr(L"Release notes"), L"",
                                  r.notes.empty() ? tr(L"This release has no notes.") : r.notes),
-                        button_row(tr(L"Release page"), L"github.com/israel2176/win.apk/releases", tr(L"Open"),
+                        button_row(tr(L"Release page"), L"github.com/" WINAPK_REPO "/releases", tr(L"Open"),
                                    [page] {
                                        ShellExecuteW(nullptr, L"open", page.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
                                    })},
@@ -6378,8 +6384,8 @@ std::vector<Section> settings_sections() {
     // a build without one beside it.
     out.push_back({tr(L"About"),
                    {text_row(L"Win.apk", fmt(L"Version {0}", {version()}), tr(L"Android apps on Windows.")),
-                    button_row(tr(L"Project page"), L"github.com/israel2176/win.apk", tr(L"Open"),
-                               open_url(L"https://github.com/israel2176/win.apk")),
+                    button_row(tr(L"Project page"), L"github.com/" WINAPK_REPO, tr(L"Open"),
+                               open_url(L"https://github.com/" WINAPK_REPO)),
                     button_row(tr(L"Credits and licenses"),
                                tr(L"Mac.apk, which Win.apk is built on, the other projects it uses, and their "
                                   L"licenses."),
@@ -6388,7 +6394,7 @@ std::vector<Section> settings_sections() {
                                    const fs::path notices = root() / L"THIRD_PARTY_NOTICES.txt";
                                    if (fs::exists(notices, ec)) open_path(notices);
                                    else ShellExecuteW(nullptr, L"open",
-                                                      L"https://github.com/israel2176/win.apk/blob/main/"
+                                                      L"https://github.com/" WINAPK_REPO "/blob/main/"
                                                       L"THIRD_PARTY_NOTICES.txt",
                                                       nullptr, nullptr, SW_SHOWNORMAL);
                                })},

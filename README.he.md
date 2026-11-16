@@ -94,7 +94,7 @@ Windows Subsystem for Android) מפעילים מערכת אנדרואיד שלמ
 אפליקציות ולכניסה עם Google (קיים כבר ב-Windows 11 וברוב מחשבי Windows 10).
 לא צריך הרשאות מנהל.
 
-1. מורידים את **`Win.apk-Setup.exe`** מה[גרסה האחרונה](https://github.com/israel2176/win.apk/releases/latest)
+1. מורידים את **`Win.apk-Setup.exe`** מה[גרסה האחרונה](https://github.com/israel2176/win.apk/releases)
    (או את `Win.apk-windows-x64.zip` לגרסה ניידת, בלי התקנה). במחשב ARM
    מורידים את **`Win.apk-Setup-arm64.exe`** (או `Win.apk-windows-arm64.zip`)
    כשהגרסה כוללת אותו.

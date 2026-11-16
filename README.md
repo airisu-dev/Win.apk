@@ -101,7 +101,7 @@ and Google sign-in (Windows 11 and most Windows 10 PCs have it). No
 administrator rights.
 
 1. Download **`Win.apk-Setup.exe`** from the
-   [latest release](https://github.com/israel2176/win.apk/releases/latest)
+   [latest release](https://github.com/israel2176/win.apk/releases)
    (or `Win.apk-windows-x64.zip` for a portable copy). On a Windows on Arm PC,
    take **`Win.apk-Setup-arm64.exe`** (or `Win.apk-windows-arm64.zip`) where
    the release has it.

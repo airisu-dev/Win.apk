@@ -210,7 +210,8 @@ jobs:
           cmake -S windows -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_COMPILER=clang++ \
             -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
             -DWINAPK_JNI_INCLUDE="$(cygpath -u "$JAVA_HOME")/include" -DWINAPK_ARM64_JIT=ON \
-            -DWINAPK_VERSION="${tag%%[-+]*}-dev.${{ github.run_number }}"
+            -DWINAPK_VERSION="${tag%%[-+]*}-dev.${{ github.run_number }}" \
+            -DWINAPK_REPO="${{ github.repository }}"
           cmake --build build
           ccache -s
       - name: Stage the runtime
@@ -291,7 +292,8 @@ jobs:
           cmake -S windows -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_COMPILER=clang++ \
             -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
             -DWINAPK_JNI_INCLUDE="$(cygpath -u "$JAVA_HOME")/include" \
-            -DWINAPK_VERSION="${tag%%[-+]*}-dev.${{ github.run_number }}"
+            -DWINAPK_VERSION="${tag%%[-+]*}-dev.${{ github.run_number }}" \
+            -DWINAPK_REPO="${{ github.repository }}"
           cmake --build build
           ccache -s
       - name: Stage the runtime
