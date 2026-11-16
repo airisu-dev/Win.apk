@@ -36,10 +36,12 @@ ordinary Windows processes, with no emulator and no virtual machine, by porting
 the Mac.apk runtime. Win.apk is unofficial and is not affiliated with the
 Mac.apk project. It is licensed under AGPL-3.0, like upstream.
 
+Windows on Arm has a second, native build: arm64 app code runs there as it
+is, closer to the Mac model ([`../docs/ARCHITECTURE.md`](../docs/ARCHITECTURE.md#the-arm64-host-windows-on-arm)).
+This document is about the x64 build.
+
 Not in scope for now:
 
-- Windows on ARM. It would be closer to the Mac model, since arm64 app code
-  could run natively there, but the target hardware is x64.
 - 32-bit Windows and 32-bit (x86) Android libraries.
 
 ## 2. How Mac.apk works and what changes on Windows x64

@@ -5,7 +5,7 @@
 **אפליקציות אנדרואיד ב-Windows, כתוכנות Windows רגילות. בלי אמולטור ובלי מכונה וירטואלית.**
 
 [![גרסה אחרונה](https://img.shields.io/github/v/release/israel2176/win.apk?include_prereleases&label=release&color=6c5ce7)](https://github.com/israel2176/win.apk/releases)
-[![Windows 10/11 x64](https://img.shields.io/badge/Windows-10%20%7C%2011%20x64-0078d4)](docs/he/getting-started.md#מה-צריך)
+[![Windows 10/11 x64 and Arm](https://img.shields.io/badge/Windows-10%20%7C%2011%20x64%20%7C%20Arm-0078d4)](docs/he/getting-started.md#מה-צריך)
 [![רישיון AGPL-3.0](https://img.shields.io/badge/license-AGPL--3.0-blue)](LICENSE)
 [![90 מתוך 92 אפליקציות עולות](https://img.shields.io/badge/F--Droid%20sweep-90%2F92%20start-2ea44f)](docs/APPS.md#the-automated-sweep)
 
@@ -35,6 +35,8 @@ Windows. זו הסבה לא רשמית של [Mac.apk](https://github.com/kksimp/
   (העתק-הדבק).
 - **גם אפליקציות ARM.** אפליקציות שנבנו רק למעבדי ARM של 64 ביט מתורגמות
   למעבד שלכם ברקע, בעדיפות הנמוכה ביותר.
+- **מקורי ב-Windows למעבדי ARM.** במחשב Snapdragon, גרסת ARM64 מריצה את קוד
+  ה-ARM של האפליקציות כמו שהוא, בלי תרגום ובלי אמולציה.
 - **כניסה עם חשבון Google מובנית,** ובאופן ניסיוני גם שירותי Google Play
   וחנות Play המקוריים של Google.
 - **עברית ואנגלית,** מצב בהיר וכהה. בעברית הכול מימין לשמאל, כולל ההתקנה.
@@ -87,13 +89,15 @@ Windows Subsystem for Android) מפעילים מערכת אנדרואיד שלמ
 ## התקנה
 
 **דרישות:** Windows 10 (גרסה 1903 ומעלה) או Windows 11, ‏64 ביט, על מעבד Intel
-או AMD; כ-500MB פנויים בדיסק; כרטיס גרפי עם Direct3D 11 (בלעדיו יש רינדור
+או AMD, או Windows 11 על מעבד ARM; כ-500MB פנויים בדיסק; כרטיס גרפי עם Direct3D 11 (בלעדיו יש רינדור
 בתוכנה, איטי יותר); ‏Microsoft Edge WebView2 Runtime לדפי אינטרנט בתוך
 אפליקציות ולכניסה עם Google (קיים כבר ב-Windows 11 וברוב מחשבי Windows 10).
 לא צריך הרשאות מנהל.
 
 1. מורידים את **`Win.apk-Setup.exe`** מה[גרסה האחרונה](https://github.com/israel2176/win.apk/releases/latest)
-   (או את `Win.apk-windows-x64.zip` לגרסה ניידת, בלי התקנה).
+   (או את `Win.apk-windows-x64.zip` לגרסה ניידת, בלי התקנה). במחשב ARM
+   מורידים את **`Win.apk-Setup-arm64.exe`** (או `Win.apk-windows-arm64.zip`)
+   כשהגרסה כוללת אותו.
 2. מריצים. **SmartScreen יזהיר**, כי גרסת התצוגה עדיין לא חתומה דיגיטלית:
    לוחצים **מידע נוסף** (More info) ואז **הפעל בכל זאת** (Run anyway).
 3. פותחים את Win.apk ומתקינים אפליקציה מה**חנות**, או לוחצים לחיצה כפולה על
@@ -104,12 +108,15 @@ Windows Subsystem for Android) מפעילים מערכת אנדרואיד שלמ
 ### איזו גרסה של אפליקציה להוריד
 
 אפליקציות אנדרואיד עשויות להכיל קוד לסוג מסוים של מעבד. כשמורידים אפליקציה
-לבד:
+לבד, במחשב Intel או AMD:
 
 1. ‏**x86_64**, או גרסה בלי קוד מקורי (`noarch`), היא הטובה ביותר: רצה ישירות.
 2. **חבילה שכוללת פיצול x86_64** טובה באותה מידה: Win.apk בוחר בו לבד.
 3. ‏**arm64-v8a** עובדת, דרך תרגום, ואיטית בהפעלות הראשונות.
 4. ‏**armeabi-v7a בלבד** (ARM של 32 ביט) לא תעבוד.
+
+במחשב Windows למעבדי ARM זה הפוך: ‏**arm64-v8a** (או `noarch`) רצה ישירות,
+וקוד x86_64 לא רץ ([פרטים, באנגלית](docs/arm-apps.md#on-a-windows-on-arm-pc)).
 
 החנות המובנית בוחרת בשבילכם. [למה?](docs/he/getting-started.md#איזו-גרסה-להוריד)
 

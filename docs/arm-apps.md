@@ -1,16 +1,50 @@
 # ARM apps and which build to install
 
-Phones use ARM processors; a PC uses x86-64. Most Android apps are written in
+Phones use ARM processors; most PCs use x86-64 (Intel, AMD), and some use ARM
+too (Windows on Arm: Snapdragon X and similar). Most Android apps are written in
 Java or Kotlin and run anywhere, but many also carry *native libraries*,
 machine code for one kind of processor, in the APK's `lib/<abi>/` folders.
 Which of those folders an APK has decides how well it runs in Win.apk.
 
-- [Which build to install](#which-build-to-install)
+- [On a Windows on Arm PC](#on-a-windows-on-arm-pc)
+- [Which build to install](#which-build-to-install) (Intel and AMD PCs)
 - [How ARM-only apps run](#how-arm-only-apps-run)
 - [If an ARM app crashes](#if-an-arm-app-crashes)
 - [Settings and variables](#settings-and-variables)
 
+## On a Windows on Arm PC
+
+Install **`Win.apk-Setup-arm64.exe`**, the native build. The other installer
+(`Win.apk-Setup.exe`) also runs on an Arm PC, but Windows has to emulate all of
+Win.apk then, which is slow; once a release has the arm64 installer, the
+update check moves such a copy to it.
+
+On the native build, ARM is the PC's own code, so the advice for Intel and AMD
+PCs below turns around:
+
+| The APK or bundle has | On an Arm PC | Choose it? |
+|---|---|---|
+| No `lib/` folder (Java or Kotlin only) | Runs directly | **Yes** |
+| `lib/arm64-v8a` | Runs directly, at full speed: no translation | **Yes, the best choice** |
+| `lib/x86_64` only | **Its native code does not run**: the app starts without it, and most such apps stop at once ("This file has no code for PCs…") | **No** |
+| `lib/armeabi-v7a` only | **Does not run** (32-bit ARM) | **No** |
+
+- **Take `arm64-v8a`** on APKMirror, or a bundle that has an arm64-v8a split
+  (Win.apk installs that one). The Store chooses it for you.
+- **Nothing is translated**, so there is no "Optimizing for this PC…", no
+  background work and no Settings > Apps > Speed up ARM apps.
+- **A few libraries are refused.** Windows on Arm keeps one processor register
+  (x18) for itself, and code built to use it as scratch would crash the app at
+  random. Win.apk checks each library when it loads and refuses such a one. If
+  the app cannot start without it, it ends after about 25 seconds and its log
+  says `this app cannot run on this PC: it needs <library>, which uses register
+  x18 ...`. In the last test of 92 F-Droid apps this affected 5 apps, and only
+  two games built with libGDX (Klooni, Tiny Wheels) failed to start because
+  of it; the other three load the library for an optional feature and run.
+
 ## Which build to install
+
+On an Intel or AMD PC (on an Arm PC, see [above](#on-a-windows-on-arm-pc)):
 
 | The APK or bundle has | In Win.apk | Choose it? |
 |---|---|---|
@@ -39,6 +73,9 @@ You can see what an APK holds by opening it as a zip file (rename a copy to
 `.zip`) and looking in `lib/`.
 
 ## How ARM-only apps run
+
+This and the next section are about Intel and AMD PCs; an Arm PC runs ARM code
+as it is.
 
 When an app has only 64-bit ARM libraries, Win.apk's translator
 (`winapk-aot`) turns each library into C, and the clang compiler shipped with
@@ -101,3 +138,4 @@ JIT too: not the translation`, and the translation is used again.
 | `WINAPK_AOT=0` | Run ARM code on the JIT only: no translation is loaded or made |
 | `WINAPK_AOT_CLANG=<path to clang.exe>` | Use another clang for the translation. Without the bundled one, Win.apk also looks for `clang.exe` on the `PATH` |
 | `WINAPK_ABIS=arm64-v8a` | Install an app's ARM build although it has an x86_64 one, to compare the two |
+| `WINAPK_ARM64_ALLOW_X18=1` | Arm PC only: load a library although it uses register x18 (for testing; the app will likely crash) |
