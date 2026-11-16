@@ -25,6 +25,21 @@ if(NOT CMAKE_SIZEOF_VOID_P EQUAL 8)
   message(FATAL_ERROR "Win.apk targets 64-bit Windows only.")
 endif()
 
+# On an arm64 host arm64 guest code runs natively: src/arm64/arm64_native.cpp
+# replaces the interpreter, the JIT and the translator.
+if(CMAKE_SYSTEM_PROCESSOR MATCHES "ARM64|arm64|aarch64")
+  set(WINAPK_HOST_ARM64 ON)
+  set(WINAPK_ARM64_SOURCES src/arm64/arm64_native.cpp)
+else()
+  set(WINAPK_HOST_ARM64 OFF)
+  set(WINAPK_ARM64_SOURCES
+    src/arm64/arm64_cpu.cpp
+    src/arm64/arm64_simd.cpp
+    src/arm64/arm64_guest.cpp
+    src/arm64/arm64_jit.cpp
+    src/arm64/arm64_aot.cpp)
+endif()
+
 add_library(winapk_loader STATIC
   src/elf_loader.cpp
   src/elf_tls.cpp
@@ -46,11 +61,7 @@ add_library(winapk_loader STATIC
   src/bionic/setjmp.cpp
   src/abi_thunk.cpp
   src/linker.cpp
-  src/arm64/arm64_cpu.cpp
-  src/arm64/arm64_simd.cpp
-  src/arm64/arm64_guest.cpp
-  src/arm64/arm64_jit.cpp
-  src/arm64/arm64_aot.cpp
+  ${WINAPK_ARM64_SOURCES}
   src/arm64/aot_files.cpp
   src/arm64/arm64_abi.cpp
 )
@@ -69,7 +80,12 @@ if(NOT MSVC)
   target_compile_options(winapk_loader PRIVATE -Wall -Wextra)
 endif()
 # The arm64 interpreter's 16-byte exclusives and CASP use cmpxchg16b.
-set_source_files_properties(src/arm64/arm64_cpu.cpp PROPERTIES COMPILE_OPTIONS "-mcx16")
+if(WINAPK_HOST_ARM64)
+  set(WINAPK_CX16 "")
+else()
+  set(WINAPK_CX16 "-mcx16")
+endif()
+set_source_files_properties(src/arm64/arm64_cpu.cpp PROPERTIES COMPILE_OPTIONS "${WINAPK_CX16}")
 
 # The arm64 JIT (src/arm64/arm64_jit.h): dynarmic, 0BSD, from the fork the
 # Azahar project maintains, pinned to a commit with the submodules it builds
@@ -77,7 +93,7 @@ set_source_files_properties(src/arm64/arm64_cpu.cpp PROPERTIES COMPILE_OPTIONS "
 # the loader still builds with nothing but a compiler; CI and releases turn
 # it on. Without it, arm64 code runs through the interpreter alone.
 option(WINAPK_ARM64_JIT "Build the arm64 JIT (fetches dynarmic, needs Boost headers)" OFF)
-if(WINAPK_ARM64_JIT)
+if(WINAPK_ARM64_JIT AND NOT WINAPK_HOST_ARM64)
   enable_language(C)  # Zydis, dynarmic's disassembler, is C
   include(FetchContent)
   set(DYNARMIC_TESTS OFF CACHE BOOL "" FORCE)
@@ -102,14 +118,16 @@ if(WINAPK_ARM64_JIT)
   endforeach()
   target_link_libraries(winapk_loader PRIVATE dynarmic)
   set_source_files_properties(src/arm64/arm64_jit.cpp PROPERTIES
-    COMPILE_DEFINITIONS WINAPK_HAVE_DYNARMIC=1 COMPILE_OPTIONS "-std=gnu++20;-mcx16")
+    COMPILE_DEFINITIONS WINAPK_HAVE_DYNARMIC=1 COMPILE_OPTIONS "-std=gnu++20;${WINAPK_CX16}")
 endif()
 
 add_executable(winapk-elfrun tools/elfrun_main.cpp)
 target_link_libraries(winapk-elfrun PRIVATE winapk_loader)
 
-add_executable(winapk-thunk-test test/thunk_test.cpp)
-target_link_libraries(winapk-thunk-test PRIVATE winapk_loader)
+if(NOT WINAPK_HOST_ARM64)
+  add_executable(winapk-thunk-test test/thunk_test.cpp)
+  target_link_libraries(winapk-thunk-test PRIVATE winapk_loader)
+endif()
 
 add_executable(winapk-linker-test test/linker_test.cpp)
 target_link_libraries(winapk-linker-test PRIVATE winapk_loader)
@@ -130,12 +148,14 @@ add_executable(winapk-crash-test test/crash_report_test.cpp host/crash_report.cp
 target_include_directories(winapk-crash-test PRIVATE host)
 target_link_libraries(winapk-crash-test PRIVATE winapk_loader)
 
+if(NOT WINAPK_HOST_ARM64)
 # The arm64 interpreter and bridge: test/arm64_test.cpp runs
 # test/guest/arm64_isa.c both as arm64 guest code and natively and compares.
 add_executable(winapk-arm64-test test/arm64_test.cpp)
 target_link_libraries(winapk-arm64-test PRIVATE winapk_loader)
 target_include_directories(winapk-arm64-test PRIVATE test/guest)
-target_compile_options(winapk-arm64-test PRIVATE -mcx16)
+target_compile_options(winapk-arm64-test PRIVATE ${WINAPK_CX16})
+endif()
 
 # The translation's files under racing and killed processes
 # (include/winapk/aot_files.h), test/aot_cache_test.cpp. The DLL is its
@@ -174,24 +194,32 @@ add_executable(winapk-cds-test test/cds_test.cpp host/cds_util.cpp)
 target_include_directories(winapk-cds-test PRIVATE host)
 target_link_libraries(winapk-cds-test PRIVATE bcrypt)
 
+if(NOT WINAPK_HOST_ARM64)
 # The ahead-of-time translator (include/winapk/arm64_aot.h): arm64 .so -> C,
 # which the installer compiles into <lib>.so.aot.dll.
 add_executable(winapk-aot tools/arm64_aot_main.cpp)
 target_include_directories(winapk-aot PRIVATE include)
+endif()
 
 if(MINGW)
   # One self-contained .exe: no libstdc++/libgcc/winpthread DLLs next to it.
   target_link_options(winapk-elfrun PRIVATE -static)
-  target_link_options(winapk-thunk-test PRIVATE -static)
+  if(TARGET winapk-thunk-test)
+    target_link_options(winapk-thunk-test PRIVATE -static)
+  endif()
   target_link_options(winapk-linker-test PRIVATE -static)
   target_link_options(winapk-bionic-test PRIVATE -static)
   target_link_options(winapk-crash-test PRIVATE -static -municode)
-  target_link_options(winapk-arm64-test PRIVATE -static)
+  if(TARGET winapk-arm64-test)
+    target_link_options(winapk-arm64-test PRIVATE -static)
+  endif()
   target_link_options(winapk-aot-cache-test PRIVATE -static -municode)
   target_link_options(winapk-aot-test-dll PRIVATE -static)
   target_link_options(winapk-aot-guard-test PRIVATE -static -municode)
   target_link_options(winapk-aot-guard-dll PRIVATE -static)
-  target_link_options(winapk-aot PRIVATE -static)
+  if(TARGET winapk-aot)
+    target_link_options(winapk-aot PRIVATE -static)
+  endif()
 endif()
 
 # The JNI bridge needs jni.h + win32/jni_md.h. Point WINAPK_JNI_INCLUDE at a

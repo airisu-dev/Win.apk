@@ -13,6 +13,10 @@
 
 #include <windows.h>
 
+#include "winapk/arch.h"
+
+#if WINAPK_HOST_X64
+
 namespace winapk {
 
 namespace {
@@ -297,3 +301,23 @@ double sysv_va_next_fp(SysVVaList* va) {
 }
 
 }  // namespace winapk
+
+#else  // WINAPK_HOST_ARM64
+
+// The thunks above emit x86-64 machine code (and read a System V va_list).
+// On an arm64 host the guest and the host share one calling convention for
+// fixed arguments, so a JNI native needs only its JNIEnv* replaced, and a
+// variadic entry needs an AAPCS64 va_list decoder. Neither is written yet:
+// they fail, and their callers report it.
+namespace winapk {
+
+void* make_jni_native_thunk(void*, const ArgKind*, size_t, void*, size_t) { return nullptr; }
+void* make_sysv_variadic_entry(int, void*) { return nullptr; }
+void* make_tagged_zero_stub(void*, const void*) { return nullptr; }
+void* make_r10_jump(void*, uint64_t) { return nullptr; }
+uint64_t sysv_va_next_gp(SysVVaList*) { return 0; }
+double sysv_va_next_fp(SysVVaList*) { return 0; }
+
+}  // namespace winapk
+
+#endif

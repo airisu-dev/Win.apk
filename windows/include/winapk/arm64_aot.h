@@ -60,9 +60,14 @@
 
 #pragma once
 
+#include "winapk/arch.h"
 #include "winapk/arm64_cpu.h"
 
+#if WINAPK_HOST_X64
 #include <cpuid.h>
+#else
+#include <windows.h>
+#endif
 
 #include <cstddef>
 #include <cstdint>
@@ -150,6 +155,15 @@ inline uint64_t aot_cpu_signature() {
     static const uint64_t signature = [] {
         uint64_t h = 0xcbf29ce484222325ull;
         auto add = [&](uint32_t v) { h = aot_hash(reinterpret_cast<const uint8_t*>(&v), sizeof v, h); };
+#if WINAPK_HOST_ARM64
+        // MIDR_EL1 (the registry's "CP 4000") and the features Windows reports.
+        DWORD64 midr = 0;
+        DWORD size = sizeof midr;
+        RegGetValueW(HKEY_LOCAL_MACHINE, L"HARDWARE\\DESCRIPTION\\System\\CentralProcessor\\0", L"CP 4000",
+                     RRF_RT_REG_QWORD, nullptr, &midr, &size);
+        add(static_cast<uint32_t>(midr)), add(static_cast<uint32_t>(midr >> 32));
+        for (DWORD f = 0; f < 64; ++f) add(IsProcessorFeaturePresent(f) ? f + 1 : 0);
+#else
         unsigned a = 0, b = 0, c = 0, d = 0;
         __cpuid(0, a, b, c, d);
         const unsigned max = a;
@@ -173,6 +187,7 @@ inline uint64_t aot_cpu_signature() {
             __asm__ volatile("xgetbv" : "=a"(lo), "=d"(hi) : "c"(0));
             add(lo), add(hi);
         }
+#endif
         return h ? h : 1;
     }();
     return signature;

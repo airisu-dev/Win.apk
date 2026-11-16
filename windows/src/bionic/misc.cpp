@@ -29,7 +29,10 @@
 #include <io.h>
 #include <windows.h>
 #include <bcrypt.h>
+#include "winapk/arch.h"
+#if WINAPK_HOST_X64
 #include <xmmintrin.h>
+#endif
 #include <getopt.h>
 
 // BSD's optreset, which <getopt.h> declares only under _BSD_SOURCE.
@@ -1666,6 +1669,19 @@ WINAPK_GUEST_ABI long long m_llrintf(float x) { return std::llrint(x); }
 // exponent. Out of range (and NaN) is FE_INVALID territory, where Bionic's
 // (FreeBSD's) lround returns LONG_MAX and its lrint the conversion's
 // "integer indefinite", LONG_MIN.
+// The FP rounding mode as MXCSR encodes it: 0 nearest, 1 down, 2 up, 3 toward zero.
+int current_rounding_mode() {
+#if WINAPK_HOST_X64
+    return (_mm_getcsr() >> 13) & 3;
+#else
+    // FPCR.RMode (bits 23:22) has up and down the other way round.
+    uint64_t fpcr;
+    __asm__ volatile("mrs %0, fpcr" : "=r"(fpcr));
+    const int rmode = static_cast<int>((fpcr >> 22) & 3);
+    return rmode == 1 ? 2 : rmode == 2 ? 1 : rmode;
+#endif
+}
+
 enum class QuadRound { kAway, kCurrent };
 int64_t quad_to_int(GuestQuad q, QuadRound how) {
     const uint64_t lo = static_cast<uint64_t>(q[0]), hi = static_cast<uint64_t>(q[1]);
@@ -1698,7 +1714,7 @@ int64_t quad_to_int(GuestQuad q, QuadRound how) {
         if (how == QuadRound::kAway) {
             up = frac >= 0;
         } else {
-            switch ((_mm_getcsr() >> 13) & 3) {  // MXCSR's rounding control, which rint follows
+            switch (current_rounding_mode()) {  // the rounding control rint follows (0 nearest, 1 down, 2 up, 3 zero)
                 case 0: up = frac > 0 || (frac == 0 && (ip & 1)); break;  // to nearest, ties to even
                 case 1: up = neg; break;                                   // down
                 case 2: up = !neg; break;                                  // up

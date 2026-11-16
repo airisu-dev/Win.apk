@@ -51,6 +51,7 @@
 
 #include "bionic_internal.h"
 
+#include "winapk/arch.h"
 #include "winapk/elf_loader.h"
 #include "winapk/linker.h"
 #include "winapk/mini_bionic.h"
@@ -147,7 +148,9 @@ enum : int {
 struct GuestFpstate {
     uint8_t bytes[512];
 };
+#if WINAPK_HOST_X64
 static_assert(sizeof(XMM_SAVE_AREA32) == sizeof(GuestFpstate), "FltSave is an FXSAVE image");
+#endif
 struct GuestMcontext {
     uint64_t gregs[kRegCount];
     GuestFpstate* fpregs;
@@ -410,6 +413,7 @@ extern "C" void winapk_sig_stack_fixup(uint64_t rsp) {
 
 namespace {
 
+#if WINAPK_HOST_X64
 // Calls the System V function `fn(a, b, c)` with rsp moved to `sp` (the top
 // of the alternate stack) for the duration of the call. rbp keeps the old
 // rsp; the callee preserves it. sysv_abi, so the C++ caller already treats
@@ -486,12 +490,15 @@ void ucontext_to_context(const GuestUcontext& uc, CONTEXT* c) {
     }
 }
 
+#endif
+
 bool handler_in_arm64_image(const void* handler) {
     GuestLinker* linker = GuestLinker::process();
     const ElfImage* img = linker ? linker->image_containing(handler) : nullptr;
     return img && img->is_arm64();
 }
 
+#if WINAPK_HOST_X64
 // Runs `act` for `sig` on this thread with the mask Linux gives a handler,
 // `ctx` being the interrupted registers; what the handler left in the
 // ucontext is written back to `ctx`. SA_RESETHAND has already been applied.
@@ -554,7 +561,19 @@ void run_handler(int sig, const GuestSigaction& act, GuestSiginfo* info, CONTEXT
     ts.mask = uc.sigmask & ~kUnblockable;
     deliver_pending();
 }
+#else
+// Not done yet: delivery needs the arm64 ucontext built from CONTEXT. A handler is not called, and the
+// first one is reported.
+void run_handler(int sig, const GuestSigaction&, GuestSiginfo*, CONTEXT*, uint64_t = 0, uint64_t = 0) {
+    static std::once_flag once;
+    std::call_once(once, [sig] {
+        std::fprintf(stderr, "[win.apk] signal %d for a guest handler: not delivered on the arm64 host yet\n", sig);
+        std::fflush(stderr);
+    });
+}
+#endif
 
+#if WINAPK_HOST_X64
 // ---- faults -------------------------------------------------------------------------
 
 bool committed(const void* addr) {
@@ -698,11 +717,14 @@ bool access_now_permitted(const EXCEPTION_RECORD& r) {
     }
 }
 
+#endif
+
 void note(const char* text) {
     std::fputs(text, stderr);
     std::fflush(stderr);
 }
 
+#if WINAPK_HOST_X64
 LONG CALLBACK fault_handler(EXCEPTION_POINTERS* e) {
     const EXCEPTION_RECORD& rec = *e->ExceptionRecord;
     CONTEXT* ctx = e->ContextRecord;
@@ -769,6 +791,9 @@ LONG CALLBACK fault_handler(EXCEPTION_POINTERS* e) {
     }
     return EXCEPTION_CONTINUE_EXECUTION;
 }
+#else
+LONG CALLBACK fault_handler(EXCEPTION_POINTERS*) { return EXCEPTION_CONTINUE_SEARCH; }  // arm64 faults: not yet
+#endif
 
 // ---- self-sent signals ------------------------------------------------------------------
 
@@ -848,6 +873,7 @@ int raise_self(int sig) {
     return 0;
 }
 
+#if WINAPK_HOST_X64
 // The injected call's entry on the target thread (Microsoft x64, set as its
 // Rip by inject()). A thread suspended inside a system call resumes through
 // the kernel's return path, which rewrites rcx and r11 (sysret) and leaves
@@ -934,6 +960,10 @@ int inject(uint32_t tid, int sig) {
     CloseHandle(h);
     return result;
 }
+#else
+// Not done yet: a signal for another thread needs the arm64 register state.
+int inject(uint32_t, int) { return kEAGAIN; }
+#endif
 
 WINAPK_GUEST_ABI int g_raise(int sig) {
     const int err = signal_send(0, sig);
