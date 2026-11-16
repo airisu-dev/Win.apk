@@ -137,6 +137,12 @@ std::unique_ptr<ElfImage> ElfImage::map(const std::filesystem::path& path, std::
                                     : "unsupported e_machine " + std::to_string(eh.e_machine);
         return nullptr;
     }
+#if WINAPK_HOST_ARM64
+    if (eh.e_machine == kEmX86_64) {
+        *error = "this is an x86_64 library, and this PC runs arm64 code only (an arm64-v8a build of the app is needed)";
+        return nullptr;
+    }
+#endif
     if (eh.e_type != kEtDyn) {
         *error = "not a shared object (e_type " + std::to_string(eh.e_type) + ")";
         return nullptr;

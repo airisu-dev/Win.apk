@@ -10,7 +10,7 @@
 #   windows/scripts/fetch_angle.sh <bin dir>
 #
 # These are Chromium's own builds, taken from an Electron release for Windows
-# x64 (pinned, checked against its SHA-256) instead of building ANGLE, which
+# x64 or arm64 (WINAPK_ARCH, default x64; each pinned, checked against its SHA-256) instead of building ANGLE, which
 # needs Chromium's toolchain. The zip is kept in thirdparty/angle-win/ so a rebuild
 # does not download it again.
 
@@ -19,16 +19,21 @@ set -euo pipefail
 HERE="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd)"
 BIN="${1:?bin dir}"
 VERSION=v33.4.11
-SHA256=f64c8a5a81d9b420b636fdba13e180f49d69f2198e1d86a8b01f858b17a9483c
+ARCH="${WINAPK_ARCH:-x64}"
+case "$ARCH" in
+    x64)   SHA256=f64c8a5a81d9b420b636fdba13e180f49d69f2198e1d86a8b01f858b17a9483c ;;
+    arm64) SHA256=9de9644304115cce6f7984648bfff72b68b5531cd183416fa138d86e710d591d ;;  # SHASUMS256.txt of the release
+    *) echo "[angle] unknown WINAPK_ARCH $ARCH" >&2; exit 1 ;;
+esac
 CACHE="$HERE/../../thirdparty/angle-win"
-ZIP="$CACHE/electron-$VERSION-win32-x64.zip"
+ZIP="$CACHE/electron-$VERSION-win32-$ARCH.zip"
 FILES=(libEGL.dll libGLESv2.dll d3dcompiler_47.dll vk_swiftshader.dll vk_swiftshader_icd.json vulkan-1.dll
        LICENSES.chromium.html)
 
 mkdir -p "$CACHE" "$BIN/licenses"
 if [[ ! -f "$ZIP" ]] || ! echo "$SHA256  $ZIP" | sha256sum -c --status; then
     echo "[angle] downloading Electron $VERSION for ANGLE"
-    curl -sSfL -o "$ZIP.part" "https://github.com/electron/electron/releases/download/$VERSION/electron-$VERSION-win32-x64.zip"
+    curl -sSfL -o "$ZIP.part" "https://github.com/electron/electron/releases/download/$VERSION/electron-$VERSION-win32-$ARCH.zip"
     echo "$SHA256  $ZIP.part" | sha256sum -c --status || { echo "[angle] checksum mismatch" >&2; rm -f "$ZIP.part"; exit 1; }
     mv "$ZIP.part" "$ZIP"
 fi

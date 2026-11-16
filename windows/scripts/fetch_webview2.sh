@@ -3,7 +3,7 @@
 # built and run with:
 #
 #   include/WebView2.h       the SDK's COM interface header (build time)
-#   x64/WebView2Loader.dll   the SDK's loader, which finds the installed
+#   <arch>/WebView2Loader.dll   the SDK's loader (x64 or arm64: WINAPK_ARCH), which finds the installed
 #                            WebView2 Runtime (run time, next to the runtime)
 #   LICENSE.txt              the SDK's license, BSD-3-Clause; the header and the
 #                            loader are both redistributable under it
@@ -21,29 +21,30 @@ set -euo pipefail
 
 HERE="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd)"
 VERSION=1.0.4314.35
+ARCH="${WINAPK_ARCH:-x64}"  # x64 or arm64: which WebView2Loader.dll
 SHA256=90778deb1b77e36292828b4b5833c9255c27533f40e0ddd55891ae718944edc4
 SDK="$HERE/../../thirdparty/webview2-sdk"
 PKG="$SDK/microsoft.web.webview2.$VERSION.nupkg"
 URL="https://api.nuget.org/v3-flatcontainer/microsoft.web.webview2/$VERSION/microsoft.web.webview2.$VERSION.nupkg"
 
 mkdir -p "$SDK"
-if [[ ! -f "$SDK/.unpacked-$VERSION" ]]; then
+if [[ ! -f "$SDK/.unpacked-$VERSION-$ARCH" ]]; then
     if [[ ! -f "$PKG" ]] || ! echo "$SHA256  $PKG" | sha256sum -c --status; then
         echo "[webview2] downloading the WebView2 SDK $VERSION"
         curl -sSfL -o "$PKG.part" "$URL"
         echo "$SHA256  $PKG.part" | sha256sum -c --status || { echo "[webview2] checksum mismatch" >&2; rm -f "$PKG.part"; exit 1; }
         mv "$PKG.part" "$PKG"
     fi
-    rm -rf "$SDK/include" "$SDK/x64" "$SDK"/.unpacked-*
-    mkdir -p "$SDK/include" "$SDK/x64"
+    rm -rf "$SDK/include" "$SDK/$ARCH" "$SDK"/.unpacked-*
+    mkdir -p "$SDK/include" "$SDK/$ARCH"
     unzip -q -o -j "$PKG" build/native/include/WebView2.h -d "$SDK/include"
-    unzip -q -o -j "$PKG" build/native/x64/WebView2Loader.dll -d "$SDK/x64"
+    unzip -q -o -j "$PKG" build/native/$ARCH/WebView2Loader.dll -d "$SDK/$ARCH"
     unzip -q -o -j "$PKG" LICENSE.txt -d "$SDK"
-    touch "$SDK/.unpacked-$VERSION"
+    touch "$SDK/.unpacked-$VERSION-$ARCH"
 fi
 if [[ -n "${1:-}" ]]; then
     mkdir -p "$1/licenses"
-    cp -f "$SDK/x64/WebView2Loader.dll" "$1/"
+    cp -f "$SDK/$ARCH/WebView2Loader.dll" "$1/"
     cp -f "$SDK/LICENSE.txt" "$1/licenses/WebView2-SDK-LICENSE.txt"
     echo "[webview2] WebView2Loader.dll ($VERSION) in $1"
 fi
