@@ -194,6 +194,12 @@ add_executable(winapk-cds-test test/cds_test.cpp host/cds_util.cpp)
 target_include_directories(winapk-cds-test PRIVATE host)
 target_link_libraries(winapk-cds-test PRIVATE bcrypt)
 
+# Which arm64 libraries use x18 (include/winapk/arm64_x18.h).
+add_executable(winapk-x18scan tools/x18scan_main.cpp)
+target_include_directories(winapk-x18scan PRIVATE include)
+add_executable(winapk-x18-scan-test test/x18_scan_test.cpp)
+target_include_directories(winapk-x18-scan-test PRIVATE include)
+
 if(NOT WINAPK_HOST_ARM64)
 # The ahead-of-time translator (include/winapk/arm64_aot.h): arm64 .so -> C,
 # which the installer compiles into <lib>.so.aot.dll.
@@ -220,6 +226,8 @@ if(MINGW)
   if(TARGET winapk-aot)
     target_link_options(winapk-aot PRIVATE -static)
   endif()
+  target_link_options(winapk-x18scan PRIVATE -static)
+  target_link_options(winapk-x18-scan-test PRIVATE -static)
 endif()
 
 # The JNI bridge needs jni.h + win32/jni_md.h. Point WINAPK_JNI_INCLUDE at a

@@ -3,7 +3,9 @@
 
 #include "winapk/elf_loader.h"
 
+#include "winapk/arch.h"
 #include "winapk/arm64_aot.h"
+#include "winapk/arm64_x18.h"
 #include "winapk/arm64_guest.h"
 #include "winapk/elf64_defs.h"
 #include "winapk/elf_tls.h"
@@ -187,6 +189,9 @@ std::unique_ptr<ElfImage> ElfImage::map(const std::filesystem::path& path, std::
     }
 
     if (!img->map_segments(file, error)) return nullptr;
+#if WINAPK_HOST_ARM64
+    if (img->is_arm64() && !img->check_x18(file, error)) return nullptr;
+#endif
     if (!img->read_dynamic(error)) return nullptr;
     if (img->has_tls_) {
         if (img->tls_filesz_ && !img->in_image(img->tls_vaddr_, img->tls_filesz_)) {
@@ -678,10 +683,11 @@ bool ElfImage::protect_segments(std::string* error) {
     for (const Segment& s : loads_) {
         const size_t first = (page_down(s.vaddr) - lo_vaddr_) / kPage;
         const size_t last = (page_up(s.vaddr + s.memsz) - lo_vaddr_) / kPage;
-        // arm64 text is read by the interpreter, never executed by the host:
+        // On an x64 host arm64 text is read by the interpreter, never executed:
         // keeping it non-executable is also what routes host calls into it
-        // through the exception handler (arm64_guest.h).
-        const uint32_t allowed = is_arm64() ? (kPfR | kPfW) : (kPfR | kPfW | kPfX);
+        // through the exception handler (arm64_guest.h). On an arm64 host it
+        // is code like any other.
+        const uint32_t allowed = (is_arm64() && !WINAPK_HOST_ARM64) ? (kPfR | kPfW) : (kPfR | kPfW | kPfX);
         for (size_t p = first; p < last; ++p) flags[p] |= s.flags & allowed;
     }
     size_t run = 0;
@@ -725,6 +731,23 @@ void ElfImage::seal_relro() {
     DWORD old;
     VirtualProtect(at<uint8_t>(start), end - start, PAGE_READONLY, &old);
 }
+
+#if WINAPK_HOST_ARM64
+// x18 is the TEB on Windows on Arm (arm64_x18.h). WINAPK_ARM64_ALLOW_X18=1 loads such a library anyway.
+bool ElfImage::check_x18(const std::vector<uint8_t>& file, std::string* error) const {
+    const arm64::ElfX18Scan e = arm64::scan_elf_x18(file.data(), file.size());
+    if (!e.ok || !e.scan.found()) return true;
+    char text[256];
+    std::snprintf(text, sizeof text, "uses register x18 in %llu instruction(s), the first at file offset 0x%llx",
+                  static_cast<unsigned long long>(e.scan.uses), static_cast<unsigned long long>(e.scan.first_offset));
+    if (GetEnvironmentVariableA("WINAPK_ARM64_ALLOW_X18", nullptr, 0) > 0) {
+        std::fprintf(stderr, "[win.apk] %s: %s; loaded anyway (WINAPK_ARM64_ALLOW_X18)\n", path_.u8string().c_str(), text);
+        return true;
+    }
+    *error = std::string(text) + "; Windows on Arm keeps the thread's TEB in x18, so this library cannot run natively";
+    return false;
+}
+#endif
 
 void ElfImage::register_arm64_code() {
     uint64_t text_hash = 0xcbf29ce484222325ull;

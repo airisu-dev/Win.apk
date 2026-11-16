@@ -47,6 +47,21 @@ struct Ehdr {
     Half e_shstrndx;
 };
 
+struct Shdr {
+    Word sh_name;
+    Word sh_type;
+    Xword sh_flags;
+    Addr sh_addr;
+    Off sh_offset;
+    Xword sh_size;
+    Word sh_link;
+    Word sh_info;
+    Xword sh_addralign;
+    Xword sh_entsize;
+};
+constexpr Word kShtProgbits = 1;
+constexpr Xword kShfExecinstr = 4;
+
 struct Phdr {
     Word p_type;
     Word p_flags;

@@ -29,8 +29,13 @@
 
 #pragma once
 
-#if defined(__clang__)
+#include "winapk/arch.h"
+
+#if defined(__clang__) && WINAPK_HOST_X64
 #define WINAPK_GUEST_ABI __attribute__((sysv_abi))
+#elif defined(__clang__)
+// arm64 host: Windows ARM64 and AAPCS64 agree for fixed arguments.
+#define WINAPK_GUEST_ABI
 #else
 #error "Win.apk needs clang: MSVC cannot emit System V calls, mingw GCC miscompiles them."
 #endif
