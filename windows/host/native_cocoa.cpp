@@ -1450,6 +1450,9 @@ void present_pixels(const uint32_t* argb, int w, int h) {
 
 }  // namespace
 
+// Whether the app has presented a frame yet (host_natives.h).
+bool frame_presented() { return g_frames.load() > 0; }
+
 bool content_pixel_size(int* w, int* h) {
     *w = g_content_w.load();
     *h = g_content_h.load();
