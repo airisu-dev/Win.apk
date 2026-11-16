@@ -26,7 +26,7 @@
 
 ## התקנת Win.apk
 
-1. פותחים את ה[גרסה האחרונה](https://github.com/israel2176/win.apk/releases/latest)
+1. פותחים את ה[גרסה האחרונה](https://github.com/israel2176/win.apk/releases)
    ומורידים אחד מהשניים:
    - ‏**`Win.apk-Setup.exe`**, תוכנת ההתקנה (מומלץ): מתקינה לתוך
      `%LOCALAPPDATA%\Programs\Win.apk`, מוסיפה את Win.apk לתפריט התחל ופותחת

@@ -25,7 +25,7 @@ Windows Features.
 
 ## Install Win.apk
 
-1. Open the [latest release](https://github.com/israel2176/win.apk/releases/latest)
+1. Open the [latest release](https://github.com/israel2176/win.apk/releases)
    and download one of:
    - **`Win.apk-Setup.exe`**, the installer (recommended): installs into
      `%LOCALAPPDATA%\Programs\Win.apk`, adds Win.apk to the Start menu and
