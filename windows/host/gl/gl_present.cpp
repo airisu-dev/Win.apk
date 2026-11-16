@@ -252,9 +252,10 @@ void stop_locked() {
 
 }  // namespace
 
-// WINAPK_GL_PRESENT=gpu forces the GPU layers on (a software renderer too),
-// =readback off; otherwise the launcher's Settings switch (GpuPresent,
-// default on), and on a software renderer they stay off (setup).
+// WINAPK_GL_PRESENT=readback turns the GPU layers off, =on on (the launcher
+// sets either from an app's own choice, library\<name>.gpu), =gpu on even on
+// a software renderer; otherwise the Settings switch (GpuPresent, default on).
+// On a software renderer they stay off unless forced (setup).
 bool gl_present_forced() {
     static const bool yes = [] {
         const char* e = std::getenv("WINAPK_GL_PRESENT");
@@ -266,7 +267,8 @@ bool gl_present_forced() {
 bool gl_present_wanted() {
     static const bool on = [] {
         const char* e = std::getenv("WINAPK_GL_PRESENT");
-        if (e && *e) return std::strcmp(e, "gpu") == 0;
+        if (e && std::strcmp(e, "readback") == 0) return false;
+        if (e && (std::strcmp(e, "on") == 0 || std::strcmp(e, "gpu") == 0)) return true;
         DWORD v = 1, size = sizeof v;
         return !(RegGetValueW(HKEY_CURRENT_USER, L"Software\\Win.apk", L"GpuPresent", RRF_RT_REG_DWORD, nullptr, &v,
                               &size) == ERROR_SUCCESS &&
