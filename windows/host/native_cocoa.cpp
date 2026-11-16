@@ -35,6 +35,7 @@
 #include <shellapi.h>
 
 #include "cds.h"
+#include "frame_timing.h"
 #include "gl/gl_surface.h"
 #include "native_window.h"
 #include "win32_window.h"
@@ -1116,7 +1117,11 @@ void keep_tree_frame(const uint32_t* argb, int w, int h) {
 // lifecycle and frame, then the pixels for the window when it is the content.
 void gl_tick(JNIEnv* env, jlong view, Renderer& r, jobject callbacks, jmethodID changed, jmethodID draw,
              int w, int h) {
+    namespace ft = frame_timing;
+    const bool timed = ft::on();
+    int64_t t = timed ? ft::now_us() : 0;
     const bool ready = gl_frame_begin(view, w, h);
+    if (timed) ft::add(ft::kBegin, t);
     if (r.announced_w != w || r.announced_h != h) {
         r.announced_w = w;
         r.announced_h = h;
@@ -1124,13 +1129,31 @@ void gl_tick(JNIEnv* env, jlong view, Renderer& r, jobject callbacks, jmethodID 
         check_tick_exception(env);
     }
     t_tick_withheld = false;
+    if (timed) t = ft::now_us();
     env->CallVoidMethod(callbacks, draw);
     check_tick_exception(env);
+    if (timed) ft::add(ft::kDraw, t);
     static std::vector<uint32_t> pixels;
     int fw = 0, fh = 0;
-    if (ready && !t_tick_withheld && view == g_content_view.load() && !guest_live() &&
-        gl_frame_read(&pixels, &fw, &fh)) {
-        composite_gl_frame(env, pixels, fw, fh);
+    if (ready && !t_tick_withheld && view == g_content_view.load() && !guest_live()) {
+        if (timed) {
+            // Timing only: so that "read" is the copy alone.
+            t = ft::now_us();
+            gl_frame_finish();
+            ft::add(ft::kGpu, t);
+            t = ft::now_us();
+        }
+        if (gl_frame_read(&pixels, &fw, &fh)) {
+            if (timed) {
+                ft::add(ft::kRead, t);
+                t = ft::now_us();
+            }
+            composite_gl_frame(env, pixels, fw, fh);
+            if (timed) {
+                ft::add(ft::kCompose, t);
+                ft::frame_done(fw, fh);
+            }
+        }
     }
 }
 
