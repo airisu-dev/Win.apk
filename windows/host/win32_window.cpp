@@ -2,6 +2,7 @@
 
 #include "win32_window.h"
 
+#include "frame_timing.h"
 #include "window_fit.h"
 
 #include <algorithm>
@@ -573,6 +574,7 @@ void blit_frame(HDC dc, int x, int y, int w, int h, const uint32_t* px) {
 // window) where it does not reach. Every pixel is drawn once, so nothing
 // flickers: the frame first, then the rest with the frame clipped out.
 void paint(HWND hwnd) {
+    const int64_t timed = frame_timing::on() ? frame_timing::now_us() : 0;
     PAINTSTRUCT ps;
     HDC dc = BeginPaint(hwnd, &ps);
     if (g_rtl_window) SetLayout(dc, 0);  // the app's frame as it is, not mirrored
@@ -629,6 +631,7 @@ void paint(HWND hwnd) {
     ExcludeClipRect(dc, box.left, box.top, box.right, box.bottom);
     fill(dc, client, RGB(0, 0, 0));
     EndPaint(hwnd, &ps);
+    if (timed) frame_timing::add(frame_timing::kPaint, timed);
     // The app's first frame is on screen: the launcher's splash can go.
     if (g_frame_w > 0 && IsWindowVisible(hwnd)) signal_launcher_ready();
 }

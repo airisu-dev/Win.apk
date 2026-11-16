@@ -100,6 +100,57 @@ bool init() {
     return false;
 }
 
+constexpr GLenum kBgra = 0x80E1;  // GL_BGRA_EXT
+
+// ANGLE's D3D11 surfaces are BGRA: reading them as BGRA avoids a CPU swizzle there and another back here.
+bool bgra_readable() {
+    static const bool yes = [] {
+        const char* ext = reinterpret_cast<const char*>(glGetString(GL_EXTENSIONS));
+        return ext && std::strstr(ext, "GL_EXT_read_format_bgra") != nullptr;
+    }();
+    return yes;
+}
+
+// Flips GL's bottom-up rows; RGBA is swizzled. Opaque.
+void to_argb(const uint32_t* src, std::vector<uint32_t>* argb, int W, int H, bool swizzle) {
+    argb->resize(static_cast<size_t>(W) * H);
+    for (int y = 0; y < H; ++y) {
+        const uint32_t* row = src + static_cast<size_t>(H - 1 - y) * W;
+        uint32_t* dst = argb->data() + static_cast<size_t>(y) * W;
+        if (!swizzle) {
+            for (int x = 0; x < W; ++x) dst[x] = row[x] | 0xff000000u;
+            continue;
+        }
+        for (int x = 0; x < W; ++x) {
+            const uint32_t p = row[x];  // bytes R, G, B, A
+            dst[x] = 0xff000000u | ((p & 0xff) << 16) | (p & 0xff00) | ((p >> 16) & 0xff);
+        }
+    }
+}
+
+// Reads FBO 0 into client memory and restores the app's bindings. (A pixel pack buffer read a frame late was
+// slower: ANGLE's D3D11 backend converts the pixels on the CPU at map time.)
+struct PackState {
+    GLint fbo = 0, align = 4, pbo = 0;
+    bool es3 = false;
+    void save() {
+        EGLint version = 2;
+        eglQueryContext(eglGetCurrentDisplay(), eglGetCurrentContext(), EGL_CONTEXT_CLIENT_VERSION, &version);
+        es3 = version >= 3;
+        glGetIntegerv(GL_FRAMEBUFFER_BINDING, &fbo);
+        glGetIntegerv(GL_PACK_ALIGNMENT, &align);
+        if (es3) glGetIntegerv(GL_PIXEL_PACK_BUFFER_BINDING, &pbo);
+        if (fbo) glBindFramebuffer(GL_FRAMEBUFFER, 0);
+        if (pbo) glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
+        if (align != 4) glPixelStorei(GL_PACK_ALIGNMENT, 4);
+    }
+    void restore() const {
+        if (align != 4) glPixelStorei(GL_PACK_ALIGNMENT, align);
+        if (es3) glBindBuffer(GL_PIXEL_PACK_BUFFER, static_cast<GLuint>(pbo));
+        if (fbo) glBindFramebuffer(GL_FRAMEBUFFER, static_cast<GLuint>(fbo));
+    }
+};
+
 }  // namespace
 
 bool gl_frame_begin(long long view, int w, int h) {
@@ -130,35 +181,25 @@ bool gl_frame_read(std::vector<uint32_t>* argb, int* w, int* h) {
     return true;
 }
 
+void gl_frame_finish() {
+    if (g_context != EGL_NO_CONTEXT) glFinish();
+}
+
 void gl_read_current(std::vector<uint32_t>* argb, int W, int H) {
-    thread_local std::vector<uint32_t> rgba;
-    rgba.resize(static_cast<size_t>(W) * H);
-    // Whatever the app left bound stays its own: the frame is FBO 0, read
-    // into client memory (no pixel pack buffer, ES 3 only) with no row padding.
-    EGLint version = 2;
-    eglQueryContext(eglGetCurrentDisplay(), eglGetCurrentContext(), EGL_CONTEXT_CLIENT_VERSION, &version);
-    GLint fbo = 0, align = 4, pbo = 0;
-    glGetIntegerv(GL_FRAMEBUFFER_BINDING, &fbo);
-    glGetIntegerv(GL_PACK_ALIGNMENT, &align);
-    if (version >= 3) glGetIntegerv(GL_PIXEL_PACK_BUFFER_BINDING, &pbo);
-    if (fbo) glBindFramebuffer(GL_FRAMEBUFFER, 0);
-    if (pbo) glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
-    if (align != 4) glPixelStorei(GL_PACK_ALIGNMENT, 4);
-    glReadPixels(0, 0, W, H, GL_RGBA, GL_UNSIGNED_BYTE, rgba.data());
-    if (align != 4) glPixelStorei(GL_PACK_ALIGNMENT, align);
-    if (pbo) glBindBuffer(GL_PIXEL_PACK_BUFFER, static_cast<GLuint>(pbo));
-    if (fbo) glBindFramebuffer(GL_FRAMEBUFFER, static_cast<GLuint>(fbo));
-    argb->resize(rgba.size());
-    // GL rows run bottom-up; RGBA bytes become ARGB (opaque: nothing is
-    // behind a GL frame in the window).
-    for (int y = 0; y < H; ++y) {
-        const uint32_t* src = rgba.data() + static_cast<size_t>(H - 1 - y) * W;
-        uint32_t* dst = argb->data() + static_cast<size_t>(y) * W;
-        for (int x = 0; x < W; ++x) {
-            const uint32_t p = src[x];  // bytes R, G, B, A
-            dst[x] = 0xff000000u | ((p & 0xff) << 16) | (p & 0xff00) | ((p >> 16) & 0xff);
+    thread_local std::vector<uint32_t> pixels;
+    pixels.resize(static_cast<size_t>(W) * H);
+    PackState state;
+    state.save();
+    bool swizzle = true;
+    if (bgra_readable()) {
+        while (glGetError() != GL_NO_ERROR) {
         }
+        glReadPixels(0, 0, W, H, kBgra, GL_UNSIGNED_BYTE, pixels.data());
+        swizzle = glGetError() != GL_NO_ERROR;
     }
+    if (swizzle) glReadPixels(0, 0, W, H, GL_RGBA, GL_UNSIGNED_BYTE, pixels.data());
+    state.restore();
+    to_argb(pixels.data(), argb, W, H, swizzle);
 }
 
 void* gl_shared_display() { return init() ? g_display : nullptr; }
