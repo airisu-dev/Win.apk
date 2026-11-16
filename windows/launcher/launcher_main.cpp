@@ -222,7 +222,7 @@ const wchar_t* tr(const wchar_t* en) {
         {L"Speed up ARM apps", L"האצת אפליקציות ARM"},
         {L"Translates ARM code to your PC's code in the background so apps run faster. Runs at low priority.",
          L"ממיר ברקע קוד ARM לקוד של המחשב, כדי שהאפליקציות ירוצו מהר יותר. פועל בעדיפות נמוכה."},
-        {L"Draw apps with the graphics card", L"ציור אפליקציות בכרטיס הגרפי"},
+        {L"Enable GPU rendering", L"הפעלת רינדור GPU"},
         {L"Games, video and app screens go to the window through the graphics card, at your display's refresh "
          L"rate. Turn it off if an app shows a black or frozen picture. Applies to apps opened next.",
          L"משחקים, וידאו ומסכי אפליקציות מוצגים בחלון דרך הכרטיס הגרפי, בקצב הרענון של המסך. כדאי לכבות אם "
@@ -337,7 +337,7 @@ const wchar_t* tr(const wchar_t* en) {
         {L"Portrait – required by the app", L"לאורך – לפי דרישת האפליקציה"},
         {L"Landscape – required by the app", L"לרוחב – לפי דרישת האפליקציה"},
         {L"Settings' default", L"ברירת המחדל שבהגדרות"},
-        {L"Draw with the graphics card", L"ציור בכרטיס הגרפי"},
+        {L"GPU rendering", L"רינדור GPU"},
         {L"The settings' default is on. Applies the next time the app opens.",
          L"ברירת המחדל שבהגדרות היא מופעל. חל בפעם הבאה שהאפליקציה תיפתח."},
         {L"The settings' default is off. Applies the next time the app opens.",
@@ -884,7 +884,7 @@ void runtime_phone_size(const std::wstring& name, int* pw, int* ph) {
     *ph = h;
 }
 
-// The user's "Draw with the graphics card" choice for one app,
+// The user's "GPU rendering" choice for one app,
 // library\<name>.gpu ("on" or "off"); without one the settings' (GpuPresent)
 // decides, which the runtime reads itself.
 fs::path gpu_file(const std::wstring& name) { return library_dir() / (name + L".gpu"); }
@@ -6368,7 +6368,7 @@ std::vector<Section> settings_sections() {
     // Read by the runtime when an app opens (host/gl/gl_present.cpp, gl_present_wanted).
     Row gpu;
     gpu.kind = Row::kToggle;
-    gpu.title = tr(L"Draw apps with the graphics card");
+    gpu.title = tr(L"Enable GPU rendering");
     gpu.detail = tr(L"Games, video and app screens go to the window through the graphics card, at your display's "
                     L"refresh rate. Turn it off if an app shows a black or frozen picture. Applies to apps opened "
                     L"next.");
@@ -6579,7 +6579,7 @@ void show_info(const App& app) {
         // Read when the app opens (apply_runtime_env).
         Row gpu;
         gpu.kind = Row::kChoice;
-        gpu.title = tr(L"Draw with the graphics card");
+        gpu.title = tr(L"GPU rendering");
         gpu.detail = tr(setting(L"GpuPresent", 1) != 0 ? L"The settings' default is on. Applies the next time the "
                                                          L"app opens."
                                                        : L"The settings' default is off. Applies the next time the "

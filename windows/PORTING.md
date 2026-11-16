@@ -810,8 +810,8 @@ Still open:
 - On a GPU, GL frames are copied on the GPU into DirectComposition swap
   chains (`host/gl/gl_present.h`), with the view tree and SurfaceView frames
   as layers of their own, and the tick follows the display's refresh and
-  vblank. Without one (WARP, SwiftShader), with the setting off ("Draw apps
-  with the graphics card", `GpuPresent`) or `WINAPK_GL_PRESENT=readback`,
+  vblank. Without one (WARP, SwiftShader), with the setting off ("Enable
+  GPU rendering", `GpuPresent`; an app's own "GPU rendering") or `WINAPK_GL_PRESENT=readback`,
   the window is painted with GDI from a readback of every frame and DWM
   composites it: no tearing, but a copy per frame and no vsync. CI's runners
   have no GPU, so only the readback path runs there.
