@@ -15,6 +15,7 @@
 
 #include "bionic_internal.h"
 
+#include "winapk/arm64_guest.h"
 #include "winapk/elf_tls.h"
 #include "winapk/fs_tls_patch.h"
 
@@ -469,6 +470,7 @@ Thread* self_record() {
 DWORD WINAPI thread_main(void* p) {
     auto* t = static_cast<Thread*>(p);
     t_self = t;
+    arm64::enter_thread();                    // an arm64 host: the TLS block behind TPIDR_EL0 (arm64_guest.h)
     commit_guest_stack_for_current_thread();  // the stack a Linux thread would have mapped
     signal_altstack_for_current_thread();     // and its alternate signal stack, as Bionic's
     finish_thread(t, t->start(t->arg));

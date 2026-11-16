@@ -51,6 +51,8 @@
 
 #include "bionic_internal.h"
 
+#include "winapk/arch.h"
+#include "winapk/context.h"
 #include "winapk/elf_loader.h"
 #include "winapk/linker.h"
 #include "winapk/mini_bionic.h"
@@ -147,7 +149,9 @@ enum : int {
 struct GuestFpstate {
     uint8_t bytes[512];
 };
+#if WINAPK_HOST_X64
 static_assert(sizeof(XMM_SAVE_AREA32) == sizeof(GuestFpstate), "FltSave is an FXSAVE image");
+#endif
 struct GuestMcontext {
     uint64_t gregs[kRegCount];
     GuestFpstate* fpregs;
@@ -166,6 +170,36 @@ static_assert(offsetof(GuestUcontext, stack) == 16 && offsetof(GuestUcontext, mc
                   offsetof(GuestUcontext, sigmask) == 296 && offsetof(GuestUcontext, fpregs_mem) == 424 &&
                   sizeof(GuestUcontext) == 936,
               "Bionic x86_64 ucontext_t");
+
+// Bionic's arm64 ucontext_t is the kernel's: sigcontext (fault address, x0-x30, sp, pc, pstate) and, in its
+// reserved area, an fpsimd_context (fpsr, fpcr, v0-v31) that ends the list with a zero header.
+struct GuestSigcontextA64 {
+    uint64_t fault_address;
+    uint64_t regs[31];
+    uint64_t sp;
+    uint64_t pc;
+    uint64_t pstate;
+    alignas(16) uint8_t reserved[4096];
+};
+struct GuestFpsimdA64 {
+    uint32_t magic;  // 0x46508001
+    uint32_t size;   // 528
+    uint32_t fpsr;
+    uint32_t fpcr;
+    uint8_t vregs[32][16];
+};
+static_assert(sizeof(GuestFpsimdA64) == 528, "struct fpsimd_context");
+struct GuestUcontextA64 {
+    uint64_t flags;
+    GuestUcontextA64* link;
+    GuestStack stack;
+    uint64_t sigmask;
+    uint8_t unused[128 - sizeof(uint64_t)];  // the kernel's sigset_t is 1024 bits
+    alignas(16) GuestSigcontextA64 mcontext;
+};
+static_assert(offsetof(GuestUcontextA64, mcontext) == 176 && offsetof(GuestSigcontextA64, reserved) == 288 &&
+                  sizeof(GuestUcontextA64) == 4560,
+              "Bionic arm64 ucontext_t");
 
 using Handler1 = void(WINAPK_GUEST_ABI*)(int);
 using Handler3 = void(WINAPK_GUEST_ABI*)(int, GuestSiginfo*, GuestUcontext*);
@@ -410,6 +444,7 @@ extern "C" void winapk_sig_stack_fixup(uint64_t rsp) {
 
 namespace {
 
+#if WINAPK_HOST_X64
 // Calls the System V function `fn(a, b, c)` with rsp moved to `sp` (the top
 // of the alternate stack) for the duration of the call. rbp keeps the old
 // rsp; the callee preserves it. sysv_abi, so the C++ caller already treats
@@ -486,12 +521,80 @@ void ucontext_to_context(const GuestUcontext& uc, CONTEXT* c) {
     }
 }
 
-bool handler_in_arm64_image(const void* handler) {
+#else  // WINAPK_HOST_ARM64
+// Calls `fn(a, b, c)` with sp moved to `sp` (the top of the alternate stack) for the duration of the call.
+// x29 keeps the old sp; the callee preserves it.
+extern "C" __attribute__((naked)) void winapk_sig_call_on_stack(void* /*sp*/, void* /*fn*/, int64_t /*a*/,
+                                                                 void* /*b*/, void* /*c*/) {
+    __asm__ volatile(
+        "stp x29, x30, [sp, #-16]!\n"
+        "mov x29, sp\n"
+        "and x9, x0, #-16\n"
+        "mov sp, x9\n"
+        "mov x9, x1\n"
+        "mov x0, x2\n"
+        "mov x1, x3\n"
+        "mov x2, x4\n"
+        "blr x9\n"
+        "mov sp, x29\n"
+        "ldp x29, x30, [sp], #16\n"
+        "ret\n" ::: "memory");
+}
+
+constexpr uint32_t kFpsimdMagic = 0x46508001;
+
+void context_to_ucontext(const CONTEXT& c, GuestUcontextA64* uc) {
+    GuestSigcontextA64& m = uc->mcontext;
+    for (int i = 0; i < 31; ++i) m.regs[i] = c.X[i];  // x29 is Fp, x30 Lr
+    m.sp = c.Sp;
+    m.pc = c.Pc;
+    m.pstate = c.Cpsr;
+    auto* fp = reinterpret_cast<GuestFpsimdA64*>(m.reserved);
+    fp->magic = kFpsimdMagic;
+    fp->size = sizeof(GuestFpsimdA64);
+    fp->fpsr = c.Fpsr;
+    fp->fpcr = c.Fpcr;
+    for (int i = 0; i < 32; ++i) std::memcpy(fp->vregs[i], &c.V[i], 16);
+    // m.reserved after the record is zero: the terminating header.
+}
+
+// What the handler may have changed: the registers, pstate and the FP/SIMD state. x18 is the TEB here
+// (arm64_x18.h): the guest sees it and cannot move it.
+void ucontext_to_context(const GuestUcontextA64& uc, CONTEXT* c) {
+    const GuestSigcontextA64& m = uc.mcontext;
+    for (int i = 0; i < 31; ++i) {
+        if (i != 18) c->X[i] = m.regs[i];
+    }
+    c->Sp = m.sp;
+    c->Pc = m.pc;
+    c->Cpsr = static_cast<ULONG>(m.pstate);
+    const auto* fp = reinterpret_cast<const GuestFpsimdA64*>(m.reserved);
+    if (fp->magic == kFpsimdMagic && fp->size == sizeof(GuestFpsimdA64)) {
+        c->Fpsr = fp->fpsr;
+        c->Fpcr = fp->fpcr;
+        for (int i = 0; i < 32; ++i) std::memcpy(&c->V[i], fp->vregs[i], 16);
+    }
+}
+
+#endif
+
+[[maybe_unused]] bool handler_in_arm64_image(const void* handler) {
     GuestLinker* linker = GuestLinker::process();
     const ElfImage* img = linker ? linker->image_containing(handler) : nullptr;
     return img && img->is_arm64();
 }
 
+// On x64 an arm64 library's handler cannot be called directly; an arm64 host calls any.
+bool handler_deliverable(const void* handler) {
+#if WINAPK_HOST_X64
+    return !handler_in_arm64_image(handler);
+#else
+    (void)handler;
+    return true;
+#endif
+}
+
+#if WINAPK_HOST_X64
 // Runs `act` for `sig` on this thread with the mask Linux gives a handler,
 // `ctx` being the interrupted registers; what the handler left in the
 // ucontext is written back to `ctx`. SA_RESETHAND has already been applied.
@@ -554,6 +657,53 @@ void run_handler(int sig, const GuestSigaction& act, GuestSiginfo* info, CONTEXT
     ts.mask = uc.sigmask & ~kUnblockable;
     deliver_pending();
 }
+#else
+// Runs `act` for `sig` with Linux's handler mask; what the handler leaves in the ucontext goes back to `ctx`.
+void run_handler(int sig, const GuestSigaction& act, GuestSiginfo* info, CONTEXT* ctx, uint64_t = 0, uint64_t = 0) {
+    ThreadSignals& ts = t_sig;
+    ++ts.handlers_run;
+    alignas(16) GuestUcontextA64 uc;
+    std::memset(&uc, 0, sizeof(uc));
+    context_to_ucontext(*ctx, &uc);
+    uc.sigmask = ts.mask;
+    const bool already_on_alt = on_altstack(ts, __builtin_frame_address(0));
+    uc.stack = ts.altstack;
+    uc.stack.flags = altstack_enabled(ts) ? (already_on_alt ? kSsOnstack : 0) : kSsDisable;
+    if (info && (sig == kSigSegv || sig == kSigBus)) uc.mcontext.fault_address = reinterpret_cast<uint64_t>(info->fault.addr);
+
+    uint64_t during = ts.mask | act.mask;
+    if (!(static_cast<uint32_t>(act.flags) & kSaNodefer)) during |= bit(sig);
+    ts.mask = during & ~kUnblockable;
+
+    const bool use_alt = (static_cast<uint32_t>(act.flags) & kSaOnstack) && altstack_enabled(ts) && !already_on_alt &&
+                         commit_own_altstack(ts);
+    const bool with_info = static_cast<uint32_t>(act.flags) & kSaSiginfo;
+    if (use_alt) {
+        void* top = static_cast<char*>(ts.altstack.sp) + ts.altstack.size;
+        // As on x64: the alternate stack's bounds are the thread's for the call.
+        auto* tib = reinterpret_cast<NT_TIB*>(NtCurrentTeb());
+        AltStackSwap& swap = t_alt_swap;
+        const AltStackSwap outer = swap;
+        swap = AltStackSwap{true, tib->StackBase, tib->StackLimit, reinterpret_cast<uintptr_t>(ts.altstack.sp),
+                            reinterpret_cast<uintptr_t>(top)};
+        tib->StackBase = top;
+        tib->StackLimit = ts.altstack.sp;
+        winapk_sig_call_on_stack(top, act.handler, sig, with_info ? info : nullptr, with_info ? &uc : nullptr);
+        tib->StackBase = swap.base;
+        tib->StackLimit = swap.limit;
+        swap = outer;
+    } else if (with_info) {
+        reinterpret_cast<void (*)(int, GuestSiginfo*, GuestUcontextA64*)>(act.handler)(sig, info, &uc);
+    } else {
+        reinterpret_cast<Handler1>(act.handler)(sig);
+    }
+
+    ucontext_to_context(uc, ctx);
+    // rt_sigreturn restores the frame's uc_sigmask, which the handler may have edited.
+    ts.mask = uc.sigmask & ~kUnblockable;
+    deliver_pending();
+}
+#endif
 
 // ---- faults -------------------------------------------------------------------------
 
@@ -561,6 +711,14 @@ bool committed(const void* addr) {
     MEMORY_BASIC_INFORMATION mbi{};
     return VirtualQuery(addr, &mbi, sizeof(mbi)) && mbi.State == MEM_COMMIT;
 }
+
+#if WINAPK_HOST_ARM64
+bool guest_pc_is_brk(uint64_t pc) {
+    uint32_t insn;
+    std::memcpy(&insn, reinterpret_cast<const void*>(pc), sizeof insn);
+    return (insn & 0xffe0001f) == 0xd4200000;
+}
+#endif
 
 // The signal and si_code a Windows exception stands for; false for one that
 // is no signal (C++ exceptions, debugger notifications, ...).
@@ -584,7 +742,18 @@ bool classify(const EXCEPTION_RECORD& r, uint64_t rip, int* sig, int* code, void
             *addr = const_cast<void*>(at);
             return true;
         case EXCEPTION_DATATYPE_MISALIGNMENT: *sig = kSigBus; *code = kBusAdraln; return true;
-        case EXCEPTION_ILLEGAL_INSTRUCTION: *sig = kSigIll; *code = kIllIllopc; return true;
+        case EXCEPTION_ILLEGAL_INSTRUCTION:
+#if WINAPK_HOST_ARM64
+            // A brk other than #0xf000 (__builtin_trap is brk #1) arrives as an illegal instruction; Linux says SIGTRAP.
+            if (guest_pc_is_brk(rip)) {
+                *sig = kSigTrap;
+                *code = kTrapBrkpt;
+                return true;
+            }
+#endif
+            *sig = kSigIll;
+            *code = kIllIllopc;
+            return true;
         case EXCEPTION_PRIV_INSTRUCTION: *sig = kSigIll; *code = kIllPrvopc; return true;
         case EXCEPTION_INT_DIVIDE_BY_ZERO: *sig = kSigFpe; *code = kFpeIntdiv; return true;
         case EXCEPTION_INT_OVERFLOW: *sig = kSigFpe; *code = kFpeIntovf; return true;
@@ -601,6 +770,7 @@ bool classify(const EXCEPTION_RECORD& r, uint64_t rip, int* sig, int* code, void
     }
 }
 
+#if WINAPK_HOST_X64
 // x86 trap numbers and page-fault error bits, for gregs[REG_TRAPNO] and
 // gregs[REG_ERR] (Breakpad and Mono print them).
 void fill_trap(const EXCEPTION_RECORD& r, uint64_t* trapno, uint64_t* err) {
@@ -632,6 +802,8 @@ void fill_trap(const EXCEPTION_RECORD& r, uint64_t* trapno, uint64_t* err) {
     }
 }
 
+#endif
+
 bool guest_code(const void* p, bool* arm64) {
     GuestLinker* linker = GuestLinker::process();
     const ElfImage* img = linker ? linker->image_containing(p) : nullptr;
@@ -643,14 +815,16 @@ bool guest_code(const void* p, bool* arm64) {
 // A return address into a guest library among the words above rsp: the
 // guest called a host function that faulted on its behalf (memcpy on a bad
 // pointer). Guest code has no unwind tables, so the stack is scanned.
-bool stack_has_guest_frame(uint64_t rsp) {
+bool stack_has_guest_frame(uint64_t rsp, uint64_t lr) {
     MEMORY_BASIC_INFORMATION mbi{};
     if (!VirtualQuery(reinterpret_cast<const void*>(rsp), &mbi, sizeof(mbi)) || mbi.State != MEM_COMMIT) return false;
+    bool arm64_lr = false;
+    if (lr && guest_code(reinterpret_cast<const void*>(lr), &arm64_lr) && arm64_lr == (WINAPK_HOST_ARM64 != 0)) return true;  // a leaf: its caller is in lr
     const auto* top = reinterpret_cast<const uint64_t*>(rsp);
     const auto* end = reinterpret_cast<const uint64_t*>(static_cast<const char*>(mbi.BaseAddress) + mbi.RegionSize);
     for (const uint64_t* p = top; p < end && p < top + 4096; ++p) {
         bool arm64 = false;
-        if (*p && guest_code(reinterpret_cast<const void*>(*p), &arm64) && !arm64) return true;
+        if (*p && guest_code(reinterpret_cast<const void*>(*p), &arm64) && arm64 == (WINAPK_HOST_ARM64 != 0)) return true;
     }
     return false;
 }
@@ -660,9 +834,10 @@ bool stack_has_guest_frame(uint64_t rsp) {
 // polls, which its own handler takes after every vectored one declined), in
 // the JVM's DLLs, in arm64 guest code (the interpreter's business), or in a
 // Windows DLL with no guest frame on the stack (the host's own).
-bool fault_for_guest(uint64_t rip, uint64_t rsp) {
+bool fault_for_guest(uint64_t rip, uint64_t rsp, uint64_t lr) {
     bool arm64 = false;
-    if (guest_code(reinterpret_cast<const void*>(rip), &arm64)) return !arm64;
+    // The host's own kind of guest code is the guest's to handle; the other kind is the x64 build's interpreter.
+    if (guest_code(reinterpret_cast<const void*>(rip), &arm64)) return arm64 == (WINAPK_HOST_ARM64 != 0);
     HMODULE mod = nullptr;
     if (!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
                             reinterpret_cast<LPCWSTR>(rip), &mod) ||
@@ -678,7 +853,7 @@ bool fault_for_guest(uint64_t rip, uint64_t rsp) {
     const UINT wn = GetSystemWindowsDirectoryW(windir, MAX_PATH);
     if (wn && wn < MAX_PATH) {
         for (UINT i = 0; i < wn; ++i) windir[i] = static_cast<wchar_t>(towlower(windir[i]));
-        if (std::wcsncmp(path, windir, wn) == 0) return stack_has_guest_frame(rsp);
+        if (std::wcsncmp(path, windir, wn) == 0) return stack_has_guest_frame(rsp, lr);
     }
     return true;
 }
@@ -706,14 +881,19 @@ void note(const char* text) {
 LONG CALLBACK fault_handler(EXCEPTION_POINTERS* e) {
     const EXCEPTION_RECORD& rec = *e->ExceptionRecord;
     CONTEXT* ctx = e->ContextRecord;
-    const uint64_t rip = ctx->Rip;
+    const uint64_t rip = context_pc(*ctx);
     int sig = 0, code = 0;
     void* addr = nullptr;
     if (!classify(rec, rip, &sig, &code, &addr)) return EXCEPTION_CONTINUE_SEARCH;
     const GuestSigaction act = read_action(sig);
     const auto h = reinterpret_cast<uintptr_t>(act.handler);
     if (h == kSigDfl || h == kSigIgn) return EXCEPTION_CONTINUE_SEARCH;  // the default action: a crash
-    if (!fault_for_guest(rip, ctx->Rsp)) return EXCEPTION_CONTINUE_SEARCH;
+#if WINAPK_HOST_X64
+    const uint64_t lr = 0;
+#else
+    const uint64_t lr = ctx->Lr;
+#endif
+    if (!fault_for_guest(rip, context_sp(*ctx), lr)) return EXCEPTION_CONTINUE_SEARCH;
 
     ThreadSignals& ts = t_sig;
     char line[256];
@@ -723,7 +903,7 @@ LONG CALLBACK fault_handler(EXCEPTION_POINTERS* e) {
         note(line);
         return EXCEPTION_CONTINUE_SEARCH;
     }
-    if (handler_in_arm64_image(act.handler)) {
+    if (!handler_deliverable(act.handler)) {
         static std::once_flag once;
         std::call_once(once, [] {
             note("[win.apk] a signal handler in an arm64 library cannot be called for an x86_64 fault; not delivered\n");
@@ -757,10 +937,12 @@ LONG CALLBACK fault_handler(EXCEPTION_POINTERS* e) {
     info.code = code;
     info.fault.addr = addr;
     uint64_t trapno = 0, err = 0;
+#if WINAPK_HOST_X64
     fill_trap(rec, &trapno, &err);
+#endif
     run_handler(sig, act, &info, ctx, trapno, err);
 
-    if (ctx->Rip != rip) {
+    if (context_pc(*ctx) != rip) {
         ts.np_count = 0;  // moved past it
     } else if (access_now_permitted(rec)) {
         ts.np_count = 0;  // fixed the cause; the retry succeeds
@@ -827,7 +1009,7 @@ int raise_self(int sig) {
         default_action(sig);
         return 0;
     }
-    if (handler_in_arm64_image(act.handler)) {
+    if (!handler_deliverable(act.handler)) {
         static std::once_flag once;
         std::call_once(once, [] {
             note("[win.apk] a signal handler in an arm64 library cannot be called from x86_64 code; signal dropped\n");
@@ -848,6 +1030,7 @@ int raise_self(int sig) {
     return 0;
 }
 
+#if WINAPK_HOST_X64
 // The injected call's entry on the target thread (Microsoft x64, set as its
 // Rip by inject()). A thread suspended inside a system call resumes through
 // the kernel's return path, which rewrites rcx and r11 (sysret) and leaves
@@ -863,6 +1046,20 @@ extern "C" __attribute__((naked)) void winapk_sig_async_stub() {
         "jmp winapk_sig_async_entry\n" ::"i"(offsetof(CONTEXT, Rax)));
 }
 
+#else  // WINAPK_HOST_ARM64
+// The injected call's entry (the target's new Pc). A thread suspended in a system call comes back with the
+// call's result in x0, so the arguments come on the stack and the live x0 replaces the parked one.
+extern "C" [[noreturn]] void winapk_sig_async_entry(int sig, CONTEXT* saved);
+extern "C" __attribute__((naked)) void winapk_sig_async_stub() {
+    __asm__ volatile(
+        "ldr x9, [sp, #8]\n"
+        "str x0, [x9, %0]\n"
+        "ldr w0, [sp]\n"
+        "mov x1, x9\n"
+        "b winapk_sig_async_entry\n" ::"i"(offsetof(CONTEXT, X0)));
+}
+#endif
+
 extern "C" void winapk_sig_async_entry(int sig, CONTEXT* saved) {
     ThreadSignals& ts = t_sig;
     if (ts.mask & bit(sig)) {
@@ -872,7 +1069,7 @@ extern "C" void winapk_sig_async_entry(int sig, CONTEXT* saved) {
         const auto h = reinterpret_cast<uintptr_t>(act.handler);
         if (h == kSigDfl) {
             default_action(sig);
-        } else if (h != kSigIgn && !handler_in_arm64_image(act.handler)) {
+        } else if (h != kSigIgn && handler_deliverable(act.handler)) {
             if (static_cast<uint32_t>(act.flags) & kSaResethand) reset_action(sig);
             alignas(16) GuestSiginfo info;
             std::memset(&info, 0, sizeof(info));
@@ -887,6 +1084,7 @@ extern "C" void winapk_sig_async_entry(int sig, CONTEXT* saved) {
     __builtin_unreachable();
 }
 
+#if WINAPK_HOST_X64
 // Delivers `sig` to another thread of this process: its registers are parked
 // below its stack pointer (past the System V red zone) and it resumes in
 // winapk_sig_async_stub with the signal and the parked copy as arguments.
@@ -934,6 +1132,48 @@ int inject(uint32_t tid, int sig) {
     CloseHandle(h);
     return result;
 }
+#else  // WINAPK_HOST_ARM64
+// As on x64 (above): the target's registers are parked below its stack pointer and it resumes in the stub.
+// AAPCS64 has no red zone, so the parked copy sits right under sp.
+int inject(uint32_t tid, int sig) {
+    HANDLE h = OpenThread(THREAD_SUSPEND_RESUME | THREAD_GET_CONTEXT | THREAD_SET_CONTEXT | THREAD_QUERY_INFORMATION,
+                          FALSE, tid);
+    if (!h) return kESRCH;
+    if (SuspendThread(h) == static_cast<DWORD>(-1)) {
+        CloseHandle(h);
+        return kESRCH;
+    }
+    int result = 0;
+    alignas(16) CONTEXT ctx;
+    std::memset(&ctx, 0, sizeof(ctx));
+    ctx.ContextFlags = CONTEXT_FULL;
+    if (!GetThreadContext(h, &ctx)) {
+        result = kEAGAIN;
+    } else {
+        const uint64_t slot = (ctx.Sp - sizeof(CONTEXT)) & ~uint64_t{15};
+        const uint64_t new_sp = slot - 16;  // two words: the signal, and the parked CONTEXT's address
+        MEMORY_BASIC_INFORMATION mbi{};
+        if (!VirtualQuery(reinterpret_cast<const void*>(new_sp), &mbi, sizeof(mbi)) || mbi.State != MEM_COMMIT ||
+            (mbi.Protect & PAGE_GUARD) ||
+            reinterpret_cast<uint64_t>(mbi.BaseAddress) + mbi.RegionSize < ctx.Sp) {
+            result = kEAGAIN;  // the target's stack is not where a call can be parked
+        } else {
+            CONTEXT resumed = ctx;
+            std::memcpy(reinterpret_cast<void*>(slot), &ctx, sizeof(CONTEXT));
+            auto* frame = reinterpret_cast<uint64_t*>(new_sp);
+            frame[0] = static_cast<uint64_t>(sig);
+            frame[1] = slot;
+            resumed.Sp = new_sp;
+            resumed.Pc = reinterpret_cast<uint64_t>(&winapk_sig_async_stub);
+            resumed.ContextFlags = CONTEXT_CONTROL | CONTEXT_INTEGER;
+            if (!SetThreadContext(h, &resumed)) result = kEAGAIN;
+        }
+    }
+    ResumeThread(h);
+    CloseHandle(h);
+    return result;
+}
+#endif
 
 WINAPK_GUEST_ABI int g_raise(int sig) {
     const int err = signal_send(0, sig);

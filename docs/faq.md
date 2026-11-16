@@ -23,12 +23,14 @@ an app's own site work too: `.apk`, `.apkm`, `.xapk` and `.apks`. Google Play
 works experimentally ([Google services](google-services.md)).
 
 **Which file should I download from APKMirror?**
-The `x86_64` variant, or `noarch`; else `arm64-v8a`. Never one that has only
+On an Intel or AMD PC, the `x86_64` variant, or `noarch`; else `arm64-v8a`.
+On an Arm PC, `arm64-v8a` or `noarch`. Never one that has only
 `armeabi-v7a`. [Which build to install](arm-apps.md#which-build-to-install)
 
 **Why is an app slow the first time?**
-Its code is converted once on install. An app with only ARM code also runs on
-a slower JIT until its translation for your processor is ready.
+Its code is converted once on install. On an Intel or AMD PC, an app with only
+ARM code also runs on a slower JIT until its translation for your processor is
+ready.
 
 **Can I sign in with my Google account?**
 Yes: Settings > Google account. The sign-in happens on Google's own page;
@@ -50,9 +52,14 @@ two-finger pinch; other multi-finger gestures cannot be made with a mouse.
 No. Nothing to turn on in the BIOS or in Windows Features, and it can run next
 to other virtual machines.
 
-**Does it run on Windows on ARM, 32-bit Windows, or Windows 7/8?**
-It needs 64-bit Windows 10 (1903 or later) or 11 on an Intel or AMD processor.
-Windows on ARM has not been tried.
+**Does it run on Windows on Arm (Snapdragon PCs)?**
+Yes, natively: install `Win.apk-Setup-arm64.exe`. Apps' ARM code then runs as
+it is, with no translation. Choose an app's `arm64-v8a` build there, not
+x86_64. A few games built with libGDX do not start yet.
+[On a Windows on Arm PC](arm-apps.md#on-a-windows-on-arm-pc)
+
+**32-bit Windows, or Windows 7/8?**
+No. It needs 64-bit Windows 10 (1903 or later) or 11.
 
 **Where are my apps' files? Can apps see my files?**
 Each app's private data is in `%LOCALAPPDATA%\Win.apk\android`. The shared

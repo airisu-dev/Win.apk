@@ -14,6 +14,7 @@
 //
 // Exit code: the number of failed checks.
 
+#include "winapk/arm64_guest.h"
 #include "winapk/guest_abi.h"
 #include "winapk/linker.h"
 #include "winapk/mini_bionic.h"
@@ -72,6 +73,7 @@ struct DtorJob {
 
 DWORD WINAPI dtor_thread(void* p) {
     auto* job = static_cast<DtorJob*>(p);
+    winapk::arm64::enter_thread();
     using Register = void(WINAPK_GUEST_ABI*)(int*);
     std::string error;
     auto reg = reinterpret_cast<Register>(job->linker->lookup(job->plugin, "link_plugin_register_thread_dtor", nullptr,
@@ -90,6 +92,8 @@ int main(int argc, char** argv) {
         return 2;
     }
 
+    std::setvbuf(stdout, nullptr, _IONBF, 0);  // keep the output if a guest crashes
+    winapk::arm64::enter_thread();
     std::printf("Win.apk guest linker\n");
     winapk::LinkerConfig config;
     config.search_paths.push_back(std::filesystem::u8path(argv[1]));

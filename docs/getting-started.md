@@ -14,7 +14,7 @@ From download to your first Android app on Windows, in about five minutes.
 
 | | |
 |---|---|
-| **Windows** | Windows 10 (version 1903 or later) or Windows 11, 64-bit (x64). Windows on ARM has not been tried |
+| **Windows** | Windows 10 (version 1903 or later) or Windows 11, 64-bit (x64); or Windows 11 on an Arm PC (Snapdragon X and similar), with the ARM64 build |
 | **Graphics** | A GPU with Direct3D 11. Without one, a software renderer takes over, more slowly |
 | **WebView2 Runtime** | For web pages inside apps and for Google sign-in. Windows 11 and most Windows 10 PCs already have it |
 | **Disk** | About 500 MB for Win.apk (it includes Java, the graphics layer and a compiler), plus the apps you install |
@@ -32,6 +32,11 @@ Windows Features.
      opens `.apk` files with it;
    - **`Win.apk-windows-x64.zip`**, the portable copy: unzip it anywhere and
      start `Win.apk.exe`.
+
+   On a Windows on Arm PC, take **`Win.apk-Setup-arm64.exe`** (or
+   `Win.apk-windows-arm64.zip`) where the release has it: it runs apps' ARM
+   code natively. The x64 one runs there too, but emulated and slower
+   ([On a Windows on Arm PC](arm-apps.md#on-a-windows-on-arm-pc)).
 2. Run the installer. **Windows SmartScreen will warn** that it does not know
    the publisher, because preview builds are not code-signed yet. Click
    **More info**, then **Run anyway**.

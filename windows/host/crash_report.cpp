@@ -17,6 +17,7 @@
 
 #include <dbghelp.h>
 
+#include "winapk/context.h"
 #include "winapk/linker.h"
 #include "winapk/mini_bionic.h"
 
@@ -222,8 +223,8 @@ LONG CALLBACK report_fault(EXCEPTION_POINTERS* e) {
     const DWORD code = e->ExceptionRecord->ExceptionCode;
     const char* name = code_name(code);
     if (!name) return EXCEPTION_CONTINUE_SEARCH;
-    const auto rip = static_cast<uint64_t>(e->ContextRecord->Rip);
-    const auto rsp = static_cast<uint64_t>(e->ContextRecord->Rsp);
+    const auto rip = winapk::context_pc(*e->ContextRecord);
+    const auto rsp = winapk::context_sp(*e->ContextRecord);
     // A fault inside a Windows DLL or the JVM is the JVM's own business unless
     // guest code is on the stack: memcpy on a guest pointer, a host function
     // the shim called with the guest's arguments (Pixel Wheels died in one
@@ -288,12 +289,12 @@ LONG WINAPI report_unhandled(EXCEPTION_POINTERS* e) {
     const DWORD code = e->ExceptionRecord->ExceptionCode;
     const char* name = code_name(code);
     if (!name) name = "exception";
-    const auto rip = static_cast<uint64_t>(e->ContextRecord->Rip);
+    const auto rip = winapk::context_pc(*e->ContextRecord);
     char where[512] = "?";
     describe(reinterpret_cast<const void*>(rip), where, sizeof(where));
     std::fprintf(stderr, "[win.apk] crash: unhandled %s (0x%08lx) at %s (rip 0x%llx, thread %lu); the process ends\n", name,
                  static_cast<unsigned long>(code), where, static_cast<unsigned long long>(rip), GetCurrentThreadId());
-    if (code != EXCEPTION_STACK_OVERFLOW) scan_frames(static_cast<uint64_t>(e->ContextRecord->Rsp), true, true);
+    if (code != EXCEPTION_STACK_OVERFLOW) scan_frames(winapk::context_sp(*e->ContextRecord), true, true);
     std::fflush(stderr);
     {
         char what[640];

@@ -68,6 +68,9 @@ HostMethods native_binder_methods();    // binder_win.cpp (MacApkBinderTransport
 
 // The app's directory under the data directory, where Boot renders the
 // launcher icon (icon.png) that becomes the window's icon. native_cocoa.cpp.
+// Whether the app has presented a frame yet.
+bool frame_presented();
+
 void set_app_dir(const std::wstring& dir);
 // That directory (empty before set_app_dir). native_cocoa.cpp.
 std::wstring app_dir();

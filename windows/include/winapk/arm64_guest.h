@@ -69,6 +69,19 @@ uint64_t call(const void* fn, const uint64_t* args = nullptr, size_t nargs = 0);
 // or `fn` itself if it is not arm64 code.
 void* host_callable(void* fn);
 
+// arm64 host: gives the calling thread its guest TLS block (TPIDR_EL0). call() and host_callable() do
+// this; code that calls a guest function pointer directly calls it first. A no-op on x64.
+#include "winapk/arch.h"
+#if WINAPK_HOST_ARM64
+void enter_thread();
+
+// Rewrites each `svc #0` in [code, code + len) to a trap answered as the Linux system call. Returns the
+// count; other `svc` immediates are counted in *unsupported.
+size_t patch_svc(uint8_t* code, size_t len, size_t* unsupported);
+#else
+inline void enter_thread() {}
+#endif
+
 // `host_fn` takes a va_list as argument number `index` (0-based); calls from
 // guest code get it converted from AAPCS64 to System V.
 void register_va_list_function(const void* host_fn, unsigned index);
@@ -111,8 +124,8 @@ void* guest_intrinsic(const char* name);
 
 // What an arm64 library's import of `name` binds to instead of the Bionic
 // shim's function, when arm64 lays out one of its structs differently from
-// x86_64 (struct stat, struct epoll_event; arm64_abi.cpp); nullptr for every
-// other name. Asked after guest_intrinsic.
+// x86_64 (struct stat, struct epoll_event, open's flags, syscall numbers;
+// arm64_abi.cpp); nullptr for every other name. Asked after guest_intrinsic.
 void* abi_override(const char* name);
 
 // A raw Linux system call (SVC #0) from arm64 code: number `nr` (x8),

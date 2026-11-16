@@ -18,11 +18,14 @@ set -euo pipefail
 
 HERE="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd)"
 BUILD="${1:?cmake build dir}"
+source "$HERE/arch.sh"
 OUT="${2:-$HERE/../build/runtime}"
 mkdir -p "$OUT"
 OUT="$(cd -- "$OUT" && pwd)"
 
 [[ -f "$BUILD/winapk-runtime.exe" ]] || { echo "[stage] no winapk-runtime.exe in $BUILD" >&2; exit 1; }
+export WINAPK_ARCH="$(winapk_pe_arch "$BUILD/winapk-runtime.exe")"  # which ANGLE and WebView2 loader to stage
+echo "[stage] runtime architecture: $WINAPK_ARCH"
 "$HERE/build_java.sh" "$OUT"
 "$HERE/build_framework_res.sh" "$OUT/bin/tools/framework-res.apk"
 cp -f "$BUILD/winapk-runtime.exe" "$BUILD/macapk-translator.exe" "$BUILD/winapk-guest-stub.dll" "$OUT/bin/"

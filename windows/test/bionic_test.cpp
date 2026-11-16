@@ -9,6 +9,7 @@
 //
 // Exit code: the number of failed checks.
 
+#include "winapk/arm64_guest.h"
 #include "winapk/guest_abi.h"
 #include "winapk/linker.h"
 #include "winapk/mini_bionic.h"
@@ -82,6 +83,8 @@ int main(int argc, char** argv) {
     winapk::set_android_root(argv[2]);
     const std::string root = windows_root_for_guest();
     if (!root.empty()) winapk::bionic_setenv("WINAPK_TEST_CACERT", root.c_str(), 1);
+    std::setvbuf(stdout, nullptr, _IONBF, 0);  // keep the output if the guest crashes
+    winapk::arm64::enter_thread();
     const int failures = test(argv[2]);
     std::fflush(stdout);
     std::printf("\n%s: %d failure(s)\n", failures ? "FAILED" : "OK", failures);

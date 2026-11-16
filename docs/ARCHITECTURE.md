@@ -20,6 +20,7 @@ and plan in detail.
   - [The variadic JNI bridge](#the-variadic-jni-bridge)
   - [Loading an app's libraries](#loading-an-apps-libraries)
   - [ARM64 code: translation, JIT, interpreter](#arm64-code-translation-jit-interpreter)
+  - [The ARM64 host (Windows on Arm)](#the-arm64-host-windows-on-arm)
   - [Graphics](#graphics)
   - [The window and the display](#the-window-and-the-display)
   - [Audio, media, camera, location and the other devices](#audio-media-camera-location-and-the-other-devices)
@@ -60,6 +61,13 @@ Win.apk's own code lives under `windows/`; `runtime/` stays close to
 upstream so that fixes can be merged, and every change to it is listed in
 [`windows/README.md`](../windows/README.md#changes-to-the-upstream-tree).
 
+A Windows on Arm PC breaks fewer of them. Win.apk has a second build for it,
+the [ARM64 host](#the-arm64-host-windows-on-arm): there the CPU runs arm64 code,
+and Windows' ARM64 convention agrees with AAPCS64 for every fixed argument, so
+1 goes away and 2 shrinks to variadic calls and `va_list`. What remains is 3
+and 4, which both builds share, and one register: Windows keeps the thread's
+TEB in x18, which AAPCS64 lets code use as scratch.
+
 ## Three classes of apps
 
 | Apps | How they run |
@@ -70,6 +78,9 @@ upstream so that fixes can be merged, and every change to it is listed in
 
 32-bit ARM (`armeabi-v7a`) is not supported. 32-bit Windows and 32-bit x86
 Android libraries are out of scope.
+
+On the ARM64 build the table turns around: `lib/arm64-v8a` loads natively
+(the ABI list is `arm64-v8a` alone) and `lib/x86_64` does not run.
 
 ## The layers
 
@@ -415,6 +426,46 @@ about 2x; the JIT roughly 3 to 6x; the interpreter about 80x. Real apps vary.
 Guest code enters the system in exactly three places, so an engine can be
 swapped without touching the rest: the loader (`ElfImage`), the linker's
 image registry (`GuestLinker`) and native-method binding (`jni_bind`).
+
+### The ARM64 host (Windows on Arm)
+
+The same tree built for `aarch64-w64-windows-gnu` (MSYS2 CLANGARM64; the one
+switch is `include/winapk/arch.h`, `WINAPK_HOST_ARM64`). The JVM is Temurin 21
+for aarch64, ANGLE Electron's win32-arm64 build, and arm64 guest code runs as
+machine code: `src/arm64/arm64_native.cpp` answers the engines' interface
+(`call` and `host_callable` are direct, there is no translation), so the
+loader, the linker and `jni_bind` do not change.
+
+- **Calls.** Fixed arguments agree between Windows ARM64 and AAPCS64, so
+  `WINAPK_GUEST_ABI` is empty and most shim functions are called as they are.
+  What differs is variadic: Windows passes floating-point variadic arguments
+  in integer registers and its `va_list` is a pointer, AAPCS64 uses v0-v7 and
+  a five-field struct. `src/abi_thunk_arm64.cpp` emits the thunks (the JNI
+  native thunk that swaps `JNIEnv*`, the variadic entry that builds an AAPCS64
+  `va_list`, the per-thread entry thunk) with a small A64 assembler, and
+  `SysVVaList` is the AAPCS64 struct there, so the printf family and the JNI
+  variadic bridge read it unchanged.
+- **Thread state.** `TPIDR_EL0` is free for user code on Windows (Windows uses
+  `TPIDRRO_EL0`), so each thread that enters guest code gets a Bionic TLS block
+  behind it, with the stack guard in slot 5; ELF TLS goes through a TLSDESC
+  resolver. No `%fs` patch.
+- **x18.** Windows keeps the TEB in x18; AAPCS64 lets code use it as scratch.
+  A foreign value survives plain computation but ends the process at the next
+  exception or Windows call. So `include/winapk/arm64_x18.h` scans
+  each library's code when it loads and refuses one that writes x18 (reading
+  it, and the context restore of libunwind or `longjmp`, are harmless). An app
+  whose refused library leaves it with no window for 25 s is ended with the
+  reason (`host/guest_libs.cpp`). In the 92-app sweep that is two libGDX games.
+- **System calls and signals.** `svc #0` in a library's code is rewritten at
+  load to a trap the runtime answers as the Linux call (`patch_svc`). Faults
+  reach guest handlers with Linux arm64's `ucontext_t` built from the Windows
+  `CONTEXT` (`src/bionic/signal.cpp`); x18 is shown but never written back.
+- **Layouts.** The shim keeps its x86_64 view; an arm64 library's imports of
+  the calls arm64 lays out differently (`struct stat`, `struct epoll_event`,
+  four `open` flags, `syscall()`'s numbers) bind to `src/arm64/arm64_abi.cpp`,
+  as they already did for arm64 code on x64. A guest `long double` is binary128
+  on both architectures; the host's is a double here (x87's 80 bits on x64), and
+  the shim converts either (`ld_to_quad`).
 
 ### Graphics
 
@@ -900,6 +951,9 @@ clang, lld and the mingw-w64 headers and the tests run under Wine. The Java
 side is built with a stock JDK 21 (`windows/scripts/build_java.sh`);
 `stage_runtime.sh` assembles a runnable folder with ANGLE, WebView2's loader
 and the bundled clang; the installer is Inno Setup (`windows/package/winapk.iss`).
+The ARM64 build is the same in an MSYS2 CLANGARM64 shell with Temurin 21
+aarch64; its folder has the arm64 ANGLE and loader and no clang, and its
+installer is `winapk.iss` with `/DArch=arm64` (`Win.apk-Setup-arm64.exe`).
 
 The unit tests, each a program under `windows/test/`, cover the loader
 (`winapk-elfrun`), the thunks, the guest JNI and its variadic bridge, the
@@ -913,8 +967,8 @@ Two GitHub Actions workflows:
 
 | Workflow | When | What |
 |---|---|---|
-| `ci.yml` | Pull requests touching `windows/` or `runtime/`, and by hand; a push to `main` only builds (to leave its compile cache to pull requests) | One pipeline of jobs. *What changed* decides which stages a pull request needs. The guest test libraries build on Ubuntu, and a launcher-only change gets a one-minute MinGW compile with warnings as errors. Everything else builds once on `windows-latest` (MSYS2 CLANG64, ccache) and stages the runtime. That output goes as artifacts to the jobs that run side by side: *Unit tests* (every test program), *Runtime tests* (the Java tests, GL, an APK booted headless and in a window, the GMS CLI), *App smoke test* (the ten apps of `windows/test/compat/smoke.txt`, one of each kind; it fails when one no longer draws), and *Package* (a preview folder with the JRE the build baked and the installer). The smoke test and the sweep run on that JRE, with one framework archive made first (`--cds-prepare`) and shared by the apps, and the smoke test records the apps' classes into the `framework-classlist` artifact, the source of `windows/java/winapk-framework.classlist`. The whole compatibility sweep runs only by hand (Run workflow, "Full compatibility sweep"): split over four machines (`sweep.py --shard`) and joined by *Sweep report* into one ranked report. A new push cancels the run in progress |
-| `windows-release.yml` | By hand only, with a tag | Builds (stamping the tag's version into `Win.apk.exe`), packages with the JRE `bake_jre.sh` makes from Temurin 21, smoke-tests the package, builds the installer and publishes a GitHub pre-release |
+| `ci.yml` | Pull requests touching `windows/` or `runtime/`, and by hand; a push to `main` only builds (to leave its compile cache to pull requests) | One pipeline of jobs. *What changed* decides which stages a pull request needs. The guest test libraries build on Ubuntu, and a launcher-only change gets a one-minute MinGW compile with warnings as errors. Everything else builds once on `windows-latest` (MSYS2 CLANG64, ccache) and stages the runtime. That output goes as artifacts to the jobs that run side by side: *Unit tests* (every test program), *Runtime tests* (the Java tests, GL, an APK booted headless and in a window, the GMS CLI), *App smoke test* (the ten apps of `windows/test/compat/smoke.txt`, one of each kind; it fails when one no longer draws), and *Package* (a preview folder with the JRE the build baked and the installer). The smoke test and the sweep run on that JRE, with one framework archive made first (`--cds-prepare`) and shared by the apps, and the smoke test records the apps' classes into the `framework-classlist` artifact, the source of `windows/java/winapk-framework.classlist`. The whole compatibility sweep runs only by hand (Run workflow, "Full compatibility sweep"): split over four machines (`sweep.py --shard`) and joined by *Sweep report* into one ranked report. Beside all that, the ARM64 build runs on `windows-11-arm` (MSYS2 CLANGARM64) with its own *Unit tests (ARM64)*, *App smoke test (ARM64)* (the smoke set less the libGDX game it refuses, and a check that that game ends saying why) and *Package (ARM64 preview + installer)*. A new push cancels the run in progress |
+| `windows-release.yml` | By hand only, with a tag | Builds twice, x64 and ARM64 (stamping the tag's version into `Win.apk.exe`), packages each with the JRE `bake_jre.sh` makes from Temurin 21, smoke-tests each on its own kind of runner, builds both installers and publishes them and both zips as one GitHub pre-release |
 | `app-probe.yml` | By hand only | Not a test: each F-Droid app of its list runs a minute in a window on the staged runtime of the branch's newest CI build (`main`'s when the branch has none); screenshots, the log and CPU samples are the artifacts (the dated rows of [Compatibility](APPS.md#apps-people-have-tried)) |
 
 [`windows/README.md`](../windows/README.md) has the commands.
@@ -923,7 +977,9 @@ The launcher's update check (Settings > Updates) reads that list of releases
 from GitHub's API, takes the highest version that is not a draft (they are
 all pre-releases, so `/releases/latest` would find none), and compares it with
 the version in its own resource; **Update** downloads the release's
-`Win.apk-Setup.exe`, checks its size (and SHA-256 when GitHub lists one), runs
+`Win.apk-Setup.exe` (on an ARM64 PC `Win.apk-Setup-arm64.exe` when the release
+has it, which moves an emulated x64 copy to the native build; an ARM64 build
+never takes the x64 installer: `setup_asset_rank`), checks its size (and SHA-256 when GitHub lists one), runs
 it and quits so that the installer (`CloseApplications=yes`) can replace the
 files. The version comes from `WINAPK_VERSION`, which the release workflow
 sets from its tag; a `ci.yml` build is the newest release tag + `-dev.<run>`
@@ -933,7 +989,8 @@ sets from its tag; a `ci.yml` build is the newest release tag + `-dev.<run>`
 
 As of this writing: the NDK media API, OpenSL ES, Vulkan, real sensor input,
 signal delivery for faults in arm64 guest code and handlers in arm64
-libraries, POSIX timers, static ELF TLS, W^X thunk pools with unwind tables,
+libraries on x64 (the ARM64 build delivers them), a fallback for arm64
+libraries that use x18 on the ARM64 build, POSIX timers, static ELF TLS, W^X thunk pools with unwind tables,
 code signing, 32-bit ARM, notification action buttons,
 and the Play Store features listed above. `windows/PORTING.md`, section 7,
 has the finer gaps and section 8 the plan.

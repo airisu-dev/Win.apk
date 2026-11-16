@@ -1,6 +1,9 @@
 ﻿; winapk.iss -- the Win.apk installer (Inno Setup 6).
 ;
-;   iscc /DSourceDir=<staged folder with jre> /DAppVersion=0.1.0-preview windows\package\winapk.iss
+;   iscc /DSourceDir=<staged folder with jre> /DAppVersion=0.1.0-preview [/DArch=arm64] windows\package\winapk.iss
+;
+; Arch is the build in SourceDir: x64 (default, Win.apk-Setup.exe) or arm64 (Win.apk-Setup-arm64.exe).
+; Both have one AppId, so either replaces the other.
 ;
 ; Installs per user (no administrator rights) to %LOCALAPPDATA%\Programs\Win.apk,
 ; adds Win.apk to the Start menu (and the desktop if asked), opens .apk files
@@ -24,6 +27,18 @@
 #ifndef AppNumber
   #define AppNumber "0.1.0"
 #endif
+#ifndef Arch
+  #define Arch "x64"
+#endif
+#if Arch == "arm64"
+  #define ArchAllowed "arm64"
+  #define SetupName "Win.apk-Setup-arm64"
+#elif Arch == "x64"
+  #define ArchAllowed "x64compatible"
+  #define SetupName "Win.apk-Setup"
+#else
+  #error Arch is x64 or arm64
+#endif
 
 [Setup]
 AppId={{6E1B7C2A-5F3D-4C8B-9A0E-7D2F1A4B3C59}
@@ -36,10 +51,10 @@ DefaultDirName={localappdata}\Programs\Win.apk
 DisableProgramGroupPage=yes
 DisableDirPage=yes
 PrivilegesRequired=lowest
-ArchitecturesAllowed=x64compatible
-ArchitecturesInstallIn64BitMode=x64compatible
+ArchitecturesAllowed={#ArchAllowed}
+ArchitecturesInstallIn64BitMode={#ArchAllowed}
 MinVersion=10.0
-OutputBaseFilename=Win.apk-Setup
+OutputBaseFilename={#SetupName}
 SetupIconFile=..\launcher\winapk.ico
 UninstallDisplayIcon={app}\Win.apk.exe
 UninstallDisplayName=Win.apk
@@ -74,6 +89,11 @@ Name: desktopicon; Description: "{cm:DesktopIcon}"
 ; The Java runtime is replaced whole: files an older one had and this one has
 ; not (other modules' DLLs, a second CDS archive) would otherwise stay.
 Type: filesandordirs; Name: "{app}\jre"
+#if Arch == "arm64"
+; Left by an x64 copy; the arm64 build has no translator.
+Type: filesandordirs; Name: "{app}\clang"
+Type: files; Name: "{app}\bin\winapk-aot.exe"
+#endif
 
 [Files]
 Source: "{#SourceDir}\*"; DestDir: "{app}"; Flags: recursesubdirs ignoreversion createallsubdirs

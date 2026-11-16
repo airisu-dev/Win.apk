@@ -13,6 +13,10 @@
 
 #include <windows.h>
 
+#include "winapk/arch.h"
+
+#if WINAPK_HOST_X64
+
 namespace winapk {
 
 namespace {
@@ -296,4 +300,16 @@ double sysv_va_next_fp(SysVVaList* va) {
     return v;
 }
 
+long double guest_va_next_long_double(SysVVaList* va) {
+    // Always memory-class, 16-byte aligned on the stack.
+    uintptr_t p = reinterpret_cast<uintptr_t>(va->overflow_arg_area);
+    p = (p + 15) & ~uintptr_t{15};
+    long double v;
+    std::memcpy(&v, reinterpret_cast<void*>(p), 10);
+    va->overflow_arg_area = reinterpret_cast<uint8_t*>(p + 16);
+    return v;
+}
+
 }  // namespace winapk
+
+#endif  // WINAPK_HOST_X64

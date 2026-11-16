@@ -6,9 +6,11 @@
 #include <atomic>
 #include <cstdio>
 #include <cstdlib>
+#include <filesystem>
 #include <memory>
 #include <mutex>
 #include <string>
+#include <thread>
 #include <unordered_map>
 
 #include <windows.h>
@@ -128,6 +130,29 @@ std::wstring source_of(const std::wstring& stub_path) {
     return so;
 }
 
+// An app whose library was refused for x18 usually cannot start (libgdx.so) and would sit with an empty window;
+// some only lose an optional feature (OpenVPN's speed test). So it is ended, with the reason, only if no frame
+// appears in time.
+void watch_for_unstartable_app(const std::string& lib, const std::string& why) {
+    static std::once_flag once;
+    std::call_once(once, [lib, why] {
+        std::thread([lib, why] {
+            constexpr int kWaitSeconds = 25;
+            for (int s = 0; s < kWaitSeconds; ++s) {
+                if (winapk::host::frame_presented()) return;
+                Sleep(1000);
+            }
+            if (winapk::host::frame_presented()) return;
+            std::fprintf(stderr,
+                         "[win.apk] this app cannot run on this PC: it needs %s, which %s. It has presented no "
+                         "window in %d seconds, so it is ended.\n",
+                         lib.c_str(), why.c_str(), kWaitSeconds);
+            std::fflush(stderr);
+            TerminateProcess(GetCurrentProcess(), 3);
+        }).detach();
+    });
+}
+
 // Loads (or finds) the guest library a stub copy stands for, with its
 // dependencies and constructors, as the dynamic linker does.
 winapk::GuestLibrary* open_for_stub(const std::wstring& stub_path) {
@@ -140,6 +165,10 @@ winapk::GuestLibrary* open_for_stub(const std::wstring& stub_path) {
     winapk::GuestLibrary* lib =
         g_linker->open(utf8(so), winapk::GuestLinker::kRtldNow, &error);
     if (!lib) std::fprintf(stderr, "[win.apk] cannot load %s: %s\n", utf8(so).c_str(), error.c_str());
+    if (!lib && error.find("x18 as a scratch register") != std::string::npos) {
+        watch_for_unstartable_app(utf8(std::filesystem::path(so).filename().wstring()),
+                                  "uses register x18 as a scratch register, which Windows on Arm keeps for itself");
+    }
     return lib;
 }
 

@@ -9,7 +9,7 @@
 **Run Android apps on Windows as ordinary Windows programs. No emulator, no virtual machine.**
 
 [![Latest release](https://img.shields.io/github/v/release/israel2176/win.apk?include_prereleases&label=release&color=6c5ce7)](https://github.com/israel2176/win.apk/releases)
-[![Windows 10/11 x64](https://img.shields.io/badge/Windows-10%20%7C%2011%20x64-0078d4)](docs/getting-started.md#what-you-need)
+[![Windows 10/11 x64 and Arm](https://img.shields.io/badge/Windows-10%20%7C%2011%20x64%20%7C%20Arm-0078d4)](docs/getting-started.md#what-you-need)
 [![License: AGPL-3.0](https://img.shields.io/badge/license-AGPL--3.0-blue)](LICENSE)
 [![Sweep: 90 of 92 apps start](https://img.shields.io/badge/F--Droid%20sweep-90%2F92%20start-2ea44f)](docs/APPS.md#the-automated-sweep)
 
@@ -39,6 +39,8 @@ Windows notifications. It is an unofficial Windows port of
   Pictures folders, and the clipboard.
 - **ARM apps too.** Apps built only for 64-bit ARM phones are translated for
   your processor in the background, at the lowest priority.
+- **Native on Windows on Arm.** On a Snapdragon PC, the ARM64 build runs
+  apps' ARM code as it is, with nothing translated or emulated.
 - **Google sign-in built in,** and, experimentally, Google's own Play services
   and Play Store.
 - **English and Hebrew,** light and dark; in Hebrew everything is laid out
@@ -93,14 +95,16 @@ The full table, checked against the code, is on
 ## Install
 
 **Requirements:** Windows 10 (1903 or later) or Windows 11, 64-bit, on an
-Intel or AMD processor; about 500 MB of disk; a Direct3D 11 GPU (a software
+Intel or AMD processor, or Windows 11 on an Arm processor; about 500 MB of disk; a Direct3D 11 GPU (a software
 renderer is the fallback); the Microsoft Edge WebView2 Runtime for web pages
 and Google sign-in (Windows 11 and most Windows 10 PCs have it). No
 administrator rights.
 
 1. Download **`Win.apk-Setup.exe`** from the
    [latest release](https://github.com/israel2176/win.apk/releases/latest)
-   (or `Win.apk-windows-x64.zip` for a portable copy).
+   (or `Win.apk-windows-x64.zip` for a portable copy). On a Windows on Arm PC,
+   take **`Win.apk-Setup-arm64.exe`** (or `Win.apk-windows-arm64.zip`) where
+   the release has it.
 2. Run it. **SmartScreen will warn** because the preview is not code-signed:
    click **More info**, then **Run anyway**.
 3. Open Win.apk and install an app from the **Store**, or double-click an APK.
@@ -110,13 +114,17 @@ administrator rights.
 ### Which build of an app to install
 
 Android apps may contain code for one kind of processor. When you download an
-app yourself:
+app yourself on an Intel or AMD PC:
 
 1. **x86_64**, or a build with no native code (`noarch`), is best: it runs
    directly.
 2. **A bundle that includes an x86_64 split** is just as good: Win.apk picks it.
 3. **arm64-v8a** works, translated, slower on its first runs.
 4. **armeabi-v7a only** (32-bit ARM) does not run.
+
+On a Windows on Arm PC it is the other way round: **arm64-v8a** (or `noarch`)
+runs directly, and x86_64 code does not run
+([details](docs/arm-apps.md#on-a-windows-on-arm-pc)).
 
 The built-in Store chooses for you. [Why](docs/arm-apps.md#which-build-to-install)
 
@@ -127,7 +135,7 @@ The built-in Store chooses for you. [Why](docs/arm-apps.md#which-build-to-instal
 | [Getting started](docs/getting-started.md) | Requirements, installing Win.apk, your first app |
 | [Compatibility](docs/APPS.md) | What works, partly works and is missing; the app sweep; apps people tried |
 | [User guide](docs/USER_GUIDE.md) | Every screen and setting |
-| [ARM apps](docs/arm-apps.md) | Which build to install, and how ARM code is translated |
+| [ARM apps](docs/arm-apps.md) | Which build to install, how ARM code is translated, Windows on Arm PCs |
 | [Google account and services](docs/google-services.md) | Signing in, and setting up Google's Play services and Play Store |
 | [Troubleshooting](docs/troubleshooting.md) | Common problems, reading a log, reporting a problem |
 | [FAQ](docs/faq.md) | Short answers to common questions |

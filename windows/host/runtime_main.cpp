@@ -80,6 +80,7 @@
 #include <windows.h>
 #include <shellapi.h>
 
+#include "winapk/arch.h"
 #include "winapk/aot_files.h"
 #include "winapk/aot_stamp.h"
 #include "winapk/arm64_aot.h"
@@ -574,7 +575,8 @@ bool install_app(Options* o, const fs::path& android_root) {
     fs::create_directories(apps, ec);
     std::wstring abis = env_var(L"WINAPK_ABIS");
     const std::wstring tag = abis.empty() ? L"" : L"." + abis;
-    if (abis.empty()) abis = L"x86_64,arm64-v8a";
+    // An arm64 host cannot run x86_64 code: arm64-v8a is the only ABI it can use.
+    if (abis.empty()) abis = WINAPK_HOST_ARM64 ? L"arm64-v8a" : L"x86_64,arm64-v8a";
     const fs::path record = apps / (L"." + o->apk.stem().wstring() + tag + L".installed");
     auto installed = [&]() -> fs::path {
         if (!fs::exists(record, ec) || fs::last_write_time(record, ec) < fs::last_write_time(o->apk, ec)) return {};

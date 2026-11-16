@@ -12,7 +12,8 @@
 #   libwinapk_poc_guest_packed.so  Android packed relocations (APS2 + RELR),
 #                                  what NDK builds for recent minSdk produce
 #
-# And, in link/, the libraries for winapk-linker-test (see guest/link_guest.c).
+# And, in link/, the libraries for winapk-linker-test (see guest/link_guest.c);
+# aarch64/ has those and the Bionic test for an arm64 host.
 
 set -euo pipefail
 
@@ -36,39 +37,47 @@ COMMON=(
     -Wl,--pack-dyn-relocs=android+relr -Wl,--use-android-relr-tags \
     -o "$OUT/libwinapk_poc_guest_packed.so" "$HERE/guest/poc_guest.c"
 
-# The linker test's dependency tree. Stub system libraries give the DT_NEEDED
+# The linker test's tree and the Bionic test's guest, for each host: x86_64 in
+# $OUT, aarch64 in $OUT/aarch64. Stub system libraries give the DT_NEEDED
 # entries an NDK build would have; they are only link inputs and never ship.
-LINK="$OUT/link"
-STUBS="$OUT/link-stubs"
-mkdir -p "$LINK" "$STUBS"
-for lib in libc libdl liblog libz; do
-    "$CC" "${COMMON[@]}" -Wl,-soname,$lib.so -o "$STUBS/$lib.so" -x c /dev/null
-done
-# Real ELF TLS (the plugin has a __thread variable dlclose must free).
-link_lib() {  # link_lib <part> <name> [linker args...]
-    local part="$1" name="$2"
-    shift 2
-    "$CC" "${COMMON[@]}" -fno-emulated-tls -DWINAPK_LINK_$part -Wl,-soname,$name.so -Wl,--no-as-needed \
-        -o "$LINK/$name.so" "$HERE/guest/link_guest.c" "$@"
-}
-# base and mid need each other: link base against a placeholder that only
-# carries mid's soname, then link the real mid against base.
-"$CC" "${COMMON[@]}" -Wl,-soname,libwinapk_link_mid.so -o "$STUBS/libwinapk_link_mid.so" -x c /dev/null
-link_lib PLUGIN libwinapk_link_plugin
-link_lib BASE libwinapk_link_base -L"$STUBS" -lwinapk_link_mid
-link_lib MID libwinapk_link_mid -L"$LINK" -L"$STUBS" -lwinapk_link_base -llog
-link_lib ROOT libwinapk_link_root -L"$LINK" -L"$STUBS" -lwinapk_link_mid -lc -ldl
-# Lookup order: DT_NEEDED order is the order of the -l flags, and it is what
-# the test is about (user: interpose before libc; late: libc before interpose).
-link_lib INTERPOSE libwinapk_link_interpose
-link_lib USER libwinapk_link_user -L"$LINK" -L"$STUBS" -lwinapk_link_interpose -lc -ldl
-link_lib LATE libwinapk_link_late -L"$LINK" -L"$STUBS" -lc -lwinapk_link_interpose
-link_lib PLAIN libwinapk_link_plain -L"$STUBS" -lc
+host_libs() {  # host_libs <out dir> <compiler flags...>
+    local out="$1"
+    shift
+    local -a flags=("$@")
+    local LINK="$out/link" STUBS="$out/link-stubs"
+    mkdir -p "$LINK" "$STUBS"
+    for lib in libc libdl liblog libz; do
+        "$CC" "${flags[@]}" -Wl,-soname,$lib.so -o "$STUBS/$lib.so" -x c /dev/null
+    done
+    # Real ELF TLS (the plugin has a __thread variable dlclose must free).
+    link_lib() {  # link_lib <part> <name> [linker args...]
+        local part="$1" name="$2"
+        shift 2
+        "$CC" "${flags[@]}" -fno-emulated-tls -DWINAPK_LINK_$part -Wl,-soname,$name.so -Wl,--no-as-needed \
+            -o "$LINK/$name.so" "$HERE/guest/link_guest.c" "$@"
+    }
+    # base and mid need each other: link base against a placeholder that only
+    # carries mid's soname, then link the real mid against base.
+    "$CC" "${flags[@]}" -Wl,-soname,libwinapk_link_mid.so -o "$STUBS/libwinapk_link_mid.so" -x c /dev/null
+    link_lib PLUGIN libwinapk_link_plugin
+    link_lib BASE libwinapk_link_base -L"$STUBS" -lwinapk_link_mid
+    link_lib MID libwinapk_link_mid -L"$LINK" -L"$STUBS" -lwinapk_link_base -llog
+    link_lib ROOT libwinapk_link_root -L"$LINK" -L"$STUBS" -lwinapk_link_mid -lc -ldl
+    # Lookup order: DT_NEEDED order is the order of the -l flags, and it is what
+    # the test is about (user: interpose before libc; late: libc before interpose).
+    link_lib INTERPOSE libwinapk_link_interpose
+    link_lib USER libwinapk_link_user -L"$LINK" -L"$STUBS" -lwinapk_link_interpose -lc -ldl
+    link_lib LATE libwinapk_link_late -L"$LINK" -L"$STUBS" -lc -lwinapk_link_interpose
+    link_lib PLAIN libwinapk_link_plain -L"$STUBS" -lc
 
-# The Bionic shim's guest-side test (winapk-bionic-test). Real ELF TLS, as an
-# NDK build for minSdk 29 or later uses.
-"$CC" "${COMMON[@]}" -fno-emulated-tls -Wl,-soname,libwinapk_bionic_guest.so \
-    -o "$OUT/libwinapk_bionic_guest.so" "$HERE/guest/bionic_guest.c" -L"$STUBS" -Wl,--no-as-needed -lz
+    # The Bionic shim's guest-side test (winapk-bionic-test). Real ELF TLS, as an
+    # NDK build for minSdk 29 or later uses.
+    "$CC" "${flags[@]}" -fno-emulated-tls -Wl,-soname,libwinapk_bionic_guest.so \
+        -o "$out/libwinapk_bionic_guest.so" "$HERE/guest/bionic_guest.c" -L"$STUBS" -Wl,--no-as-needed -lz
+}
+host_libs "$OUT" "${COMMON[@]}"
+# Atomics inlined: the outline helpers live in libgcc, which -nostdlib leaves out.
+host_libs "$OUT/aarch64" "${COMMON[@]/x86_64-linux-android24/aarch64-linux-android24}" -mno-outline-atomics
 
 # The arm64 engines' test libraries (winapk-arm64-test).
 # arm64_isa.c three ways (the test compares each against the same code built
@@ -95,6 +104,12 @@ ARM64=(
 # ELF TLS through TLSDESC (arm64_tls_guest.c): API 29, real ELF TLS.
 "$CC" "${ARM64[@]/aarch64-linux-android24/aarch64-linux-android29}" -O2 -fno-emulated-tls \
     -Wl,-soname,libwinapk_arm64_tls.so -o "$ARM64_OUT/libwinapk_arm64_tls.so" "$HERE/guest/arm64_tls_guest.c"
+# Raw Linux system calls (svc #0, arm64_svc_guest.c).
+"$CC" "${ARM64[@]}" -O2 -mno-outline-atomics -Wl,-soname,libwinapk_arm64_svc.so \
+    -o "$ARM64_OUT/libwinapk_arm64_svc.so" "$HERE/guest/arm64_svc_guest.c"
+# Signals delivered to guest handlers (arm64_signal_guest.c).
+"$CC" "${ARM64[@]}" -O2 -mno-outline-atomics -Wl,-soname,libwinapk_arm64_signal.so \
+    -o "$ARM64_OUT/libwinapk_arm64_signal.so" "$HERE/guest/arm64_signal_guest.c"
 # Control flow and edge cases (arm64_flow_guest.c), and a library the test
 # unloads with dlclose (arm64_isa.c again).
 "$CC" "${ARM64[@]}" -O2 -mno-outline-atomics -Wl,-soname,libwinapk_arm64_flow.so \
@@ -132,6 +147,7 @@ python3 "$HERE/guest/gen_arm64_fuzz.py" 400 48 1 > "$ARM64_OUT/arm64_fuzz.S"
 
 echo "[build_guest] $OUT/libwinapk_poc_guest.so"
 echo "[build_guest] $OUT/libwinapk_poc_guest_packed.so"
-echo "[build_guest] $LINK/libwinapk_link_{root,mid,base,plugin,interpose,user,late,plain}.so"
+echo "[build_guest] $OUT/link/libwinapk_link_{root,mid,base,plugin,interpose,user,late,plain}.so"
 echo "[build_guest] $OUT/libwinapk_bionic_guest.so"
+echo "[build_guest] $OUT/aarch64/{link/*,libwinapk_bionic_guest}.so (the same, for an arm64 host)"
 echo "[build_guest] $ARM64_OUT/libwinapk_arm64_{isa_O2,isa_O3,isa_lse,bridge,flow,unload,rebased,patch_*,fuzz,bench}.so"

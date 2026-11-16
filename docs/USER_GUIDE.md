@@ -59,7 +59,8 @@ What happens during an install:
    a minute for a typical app, longer for very large ones, and happens once
    per app version.
 3. If the app has only ARM64 native libraries, their translation to x64
-   starts in the background (see [ARM apps](arm-apps.md)).
+   starts in the background (see [ARM apps](arm-apps.md)). On a Windows on Arm
+   PC nothing is translated: ARM code runs as it is.
 4. The app gets a tile in the library, a Start menu shortcut under
    **Start > Win.apk Apps** and, unless turned off in the settings, a desktop
    shortcut.
@@ -105,6 +106,13 @@ Android phones use ARM processors; a PC uses x86-64. An app's native code
 | `lib/x86_64` | Loads those libraries directly, at full speed. Win.apk prefers this build whenever the APK or bundle has it |
 | Only `lib/arm64-v8a` | Translates the libraries to x64 in the background; the app runs on an ARM64 JIT until the translation is ready |
 | Only `lib/armeabi-v7a` (32-bit ARM) | Not supported. The app installs but stops when it loads that code; look for an x86_64 or arm64-v8a build |
+
+On a Windows on Arm PC with the ARM64 build of Win.apk, `lib/arm64-v8a` is the
+one that runs directly, at full speed, and Win.apk takes it from a bundle;
+`lib/x86_64` code does not run there; and a library that uses the processor
+register Windows on Arm keeps for itself (x18) is refused, and the app ends
+with that reason if it cannot start without it
+([On a Windows on Arm PC](arm-apps.md#on-a-windows-on-arm-pc)).
 
 #### ARM-only apps
 
@@ -289,7 +297,7 @@ its own. Each setting takes effect the next time an app opens unless noted.
 | Apps | **App window size** | The size apps open at, in dp (density-independent pixels, as on a phone). **Auto** is 360 × 800 dp, or the size given by `WINAPK_PHONE_SIZE` when that variable is set. Presets range from 320 × 480 to a 10-inch tablet. An app whose window you resized opens at its saved size |
 | Apps | **Default orientation** | Portrait or landscape, for every app that has no choice of its own. The default is landscape, the shape of a PC screen. Apps that require an orientation always open in it; an app's details page changes it for that app |
 | Apps | **Use my Windows folders** | On: apps' shared storage (Downloads, Pictures, Documents, Music, Movies) is your own Windows folders. Off: each is an empty folder of Win.apk's own, and your files stay where they are. See [Shared storage](#shared-storage) |
-| Apps | **Speed up ARM apps** (on) | Translates ARM code to your PC's code in the background, at low priority, so apps run faster. Off: no translation is started, one under way stops before its next part (and goes on where it was once this is on again), and translations already made are still used. See [ARM apps](arm-apps.md) |
+| Apps | **Speed up ARM apps** (on) | Translates ARM code to your PC's code in the background, at low priority, so apps run faster. Off: no translation is started, one under way stops before its next part (and goes on where it was once this is on again), and translations already made are still used. Not shown on the ARM64 build, which runs ARM code as it is. See [ARM apps](arm-apps.md) |
 | Apps | **Desktop shortcut for new apps** | Every app gets a Start menu shortcut; this adds one on the desktop too |
 | Apps | **Open .apk, .apkm, .xapk and .apks files with Win.apk** | Makes Win.apk the default program for the four formats |
 | Google account | **Sign in**, **Add another account**, **Sign out**; **Use Google services (experimental)** (off), and with it on **Google services setup** | See [Google account and Google services](google-services.md) |
@@ -460,7 +468,9 @@ When a newer version is out, the InfoBar says so with **What's new**, which
 opens Settings at Updates: the new version's row with **Update**, and its
 release notes as plain text under **What's new in** that version, with a link
 to its page on GitHub. **Update** downloads `Win.apk-Setup.exe` from the
-release (the button shows how far it is), checks that it is complete (its
+release (on a Windows on Arm PC `Win.apk-Setup-arm64.exe`, when the release has
+it: an x64 copy running there emulated moves to the native build this way)
+(the button shows how far it is), checks that it is complete (its
 size, and its SHA-256 when GitHub gives one), runs it and closes Win.apk so
 that the installer can replace it. Your apps and their data are kept. The
 update does not start while an app is running or an install is under way:

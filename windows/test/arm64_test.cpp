@@ -56,6 +56,8 @@
 #include <utility>
 #include <vector>
 
+#include <windows.h>
+
 #define ISA_EXPORT static __attribute__((noinline, used))
 #include "arm64_isa.c"
 #define BENCH_HOST
@@ -527,7 +529,7 @@ void run_patch(winapk::GuestLinker& linker, const char* file) {
     void* fn = sym(linker, lib, "flow_patch");
     void* target = sym(linker, lib, "flow_patch_target");
     if (!fn || !target) return;
-    const bool aot = winapk::arm64::engine() == winapk::arm64::Engine::kAot;
+    const bool aot = !WINAPK_HOST_ARM64 && winapk::arm64::engine() == winapk::arm64::Engine::kAot;
     if (aot) {
         check("its translation is loaded", winapk::arm64::aot_lookup(reinterpret_cast<uint64_t>(target)) != nullptr);
     }
@@ -545,6 +547,58 @@ void run_patch(winapk::GuestLinker& linker, const char* file) {
 
 // A library unloaded with dlclose must take its translation with it: other
 // code mapped there later (another library, a JIT's) is not that code.
+// Raw Linux system calls: the interpreter answers them on an x64 host, a trap does on an arm64 host.
+void run_svc(winapk::GuestLinker& linker, const char* file) {
+    std::printf("%s\n", file);
+    std::string error;
+    void* lib = linker.open(file, winapk::GuestLinker::kRtldNow, &error);
+    check("open (its svc instructions made answerable)", lib != nullptr, error);
+    if (!lib) return;
+    void* getpid_fn = sym(linker, lib, "arm64_svc_getpid");
+    void* gettid_fn = sym(linker, lib, "arm64_svc_gettid");
+    void* unknown_fn = sym(linker, lib, "arm64_svc_unknown");
+    void* write_fn = sym(linker, lib, "arm64_svc_write");
+    void* loop_fn = sym(linker, lib, "arm64_svc_loop");
+    if (!getpid_fn || !gettid_fn || !unknown_fn || !write_fn || !loop_fn) return;
+    check("getpid (172)", static_cast<uint32_t>(winapk::arm64::call(getpid_fn)) == GetCurrentProcessId());
+    check("gettid (178)", static_cast<uint32_t>(winapk::arm64::call(gettid_fn)) == GetCurrentThreadId());
+    check("an unknown number answers -ENOSYS", static_cast<int64_t>(winapk::arm64::call(unknown_fn)) == -38);
+    const char msg[] = "svc write\n";
+    const uint64_t wargs[3] = {1, reinterpret_cast<uint64_t>(msg), sizeof msg - 1};
+    check("write (64) to stdout", winapk::arm64::call(write_fn, wargs, 3) == sizeof msg - 1);
+    const uint64_t n = 100;
+    check("registers survive the calls of a loop", winapk::arm64::call(loop_fn, &n, 1) == 3 * (100 * 99 / 2) + 100);
+    uint64_t other = 0;
+    std::thread t([&] { other = winapk::arm64::call(gettid_fn); });
+    t.join();
+    check("another thread's gettid is its own", static_cast<uint32_t>(other) != GetCurrentThreadId());
+}
+
+// Signals delivered to arm64 guest handlers (arm64_signal_guest.c); arm64 host only.
+void run_signals(winapk::GuestLinker& linker, const char* file) {
+    std::printf("%s\n", file);
+    std::string error;
+    void* lib = linker.open(file, winapk::GuestLinker::kRtldNow, &error);
+    check("open", lib != nullptr, error);
+    if (!lib) return;
+    auto call0 = [&](const char* name) -> int64_t {
+        void* f = sym(linker, lib, name);
+        return f ? static_cast<int64_t>(static_cast<int32_t>(winapk::arm64::call(f))) : -999999;  // an int: the upper half of x0 is undefined
+    };
+    check("a SIGSEGV handler redirects pc: the thread resumes in the function it chose", call0("sig_redirect") == 77);
+    check("... it saw si_code SEGV_MAPERR (1) and si_addr 16", call0("sig_code") == 1 && call0("sig_addr") == 16);
+    check("... a ucontext with pc, sp, the fault address and an fpsimd_context", call0("sig_ucontext_ok") == 1);
+    check("a handler that makes the page accessible: the load is retried", call0("sig_fix_mapping") == 1);
+    check("a handler sets x0 and skips the load: the function returns it", call0("sig_regs") == 1234);
+    check("brk #1 is SIGTRAP, TRAP_BRKPT (1)", call0("sig_trap") == 1 && call0("sig_code") == 1);
+    check("raise() runs the handler before returning, with siginfo and ucontext", call0("sig_raise") == 1);
+    check("... as a tkill (SI_TKILL -6)", call0("sig_raise_code") == -6);
+    check("... with its signal blocked while it runs", call0("sig_mask_blocked") == 1);
+    check("SA_ONSTACK: the handler runs on the alternate stack, uc_stack says so", call0("sig_altstack") == 1);
+    check("siglongjmp out of a SIGSEGV handler, three times (the mask comes back)", call0("sig_longjmp") == 1);
+    check("pthread_kill: the handler runs on the target thread", call0("sig_thread") == 1);
+}
+
 void run_unload(winapk::GuestLinker& linker, const char* file) {
     std::printf("%s\n", file);
     std::string error;
@@ -556,7 +610,7 @@ void run_unload(winapk::GuestLinker& linker, const char* file) {
     const uint64_t in[3] = {1, 2, 3};
     check("runs", winapk::arm64::call(fn, in, 3) == isa_arith(1, 2, 3));
     const bool translated = winapk::arm64::aot_lookup(reinterpret_cast<uint64_t>(fn)) != nullptr;
-    if (winapk::arm64::engine() == winapk::arm64::Engine::kAot) check("its translation is loaded", translated);
+    if (!WINAPK_HOST_ARM64 && winapk::arm64::engine() == winapk::arm64::Engine::kAot) check("its translation is loaded", translated);
     check("dlclose", linker.close(lib, &error) == 0, error);
     check("dlclose drops the translation", winapk::arm64::aot_lookup(reinterpret_cast<uint64_t>(fn)) == nullptr);
 }
@@ -890,6 +944,7 @@ void run_speed(winapk::GuestLinker& linker,
 }  // namespace
 
 int main(int argc, char** argv) {
+    std::setvbuf(stdout, nullptr, _IONBF, 0);  // a crash must not take the lines before it along
     if (argc < 2) {
         std::fprintf(stderr, "usage: winapk-arm64-test <dir with libwinapk_arm64_*.so>\n");
         return 2;
@@ -907,6 +962,10 @@ int main(int argc, char** argv) {
     // Every check on each engine the build has: the interpreter, the JIT
     // (dynarmic) when it is built in, and the code translated ahead of time
     // (the <lib>.so.aot.dll files next to the libraries, when present).
+#if WINAPK_HOST_ARM64
+    // One "engine" on an arm64 host: native, compared with the same C built for the host (run_isa).
+    std::vector<std::pair<winapk::arm64::Engine, const char*>> engines = {{winapk::arm64::Engine::kAot, "native"}};
+#else
     std::vector<std::pair<winapk::arm64::Engine, const char*>> engines = {
         {winapk::arm64::Engine::kInterpreter, "interpreter"}};
     if (winapk::arm64::set_engine(winapk::arm64::Engine::kJit)) {
@@ -915,6 +974,7 @@ int main(int argc, char** argv) {
         std::printf("(this build has no JIT: -DWINAPK_ARM64_JIT=ON adds it)\n");
     }
     engines.push_back({winapk::arm64::Engine::kAot, "AOT"});
+#endif
     for (const auto& e : engines) {
         winapk::arm64::set_engine(e.first);
         std::printf("\n==== Win.apk arm64, %s ====\n", e.second);
@@ -926,15 +986,23 @@ int main(int argc, char** argv) {
         run_tls(linker, "libwinapk_arm64_tls.so");
         run_eh(linker, std::filesystem::u8path(argv[1]));
         run_unload(linker, "libwinapk_arm64_unload.so");
+        run_svc(linker, "libwinapk_arm64_svc.so");
+#if WINAPK_HOST_ARM64
+        run_signals(linker, "libwinapk_arm64_signal.so");
+#endif
+#if !WINAPK_HOST_ARM64  // code the engines translate or patch: nothing to do for native code
         run_patch(linker, e.first == winapk::arm64::Engine::kAot   ? "libwinapk_arm64_patch_aot.so"
                           : e.first == winapk::arm64::Engine::kJit ? "libwinapk_arm64_patch_jit.so"
                                                                    : "libwinapk_arm64_patch_interp.so");
+#endif
     }
+#if !WINAPK_HOST_ARM64
     winapk::arm64::set_engine(winapk::arm64::Engine::kAot);
     run_rebased(linker, std::filesystem::u8path(argv[1]));
     run_sealed(linker, std::filesystem::u8path(argv[1]));
     run_fuzz(linker, engines);
     run_speed(linker, engines);
+#endif
 
     std::printf("\n%s: %d failure(s)\n", g_failures ? "FAILED" : "OK", g_failures);
     return g_failures;

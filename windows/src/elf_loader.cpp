@@ -3,7 +3,9 @@
 
 #include "winapk/elf_loader.h"
 
+#include "winapk/arch.h"
 #include "winapk/arm64_aot.h"
+#include "winapk/arm64_x18.h"
 #include "winapk/arm64_guest.h"
 #include "winapk/elf64_defs.h"
 #include "winapk/elf_tls.h"
@@ -135,6 +137,12 @@ std::unique_ptr<ElfImage> ElfImage::map(const std::filesystem::path& path, std::
                                     : "unsupported e_machine " + std::to_string(eh.e_machine);
         return nullptr;
     }
+#if WINAPK_HOST_ARM64
+    if (eh.e_machine == kEmX86_64) {
+        *error = "this is an x86_64 library, and this PC runs arm64 code only (an arm64-v8a build of the app is needed)";
+        return nullptr;
+    }
+#endif
     if (eh.e_type != kEtDyn) {
         *error = "not a shared object (e_type " + std::to_string(eh.e_type) + ")";
         return nullptr;
@@ -187,6 +195,21 @@ std::unique_ptr<ElfImage> ElfImage::map(const std::filesystem::path& path, std::
     }
 
     if (!img->map_segments(file, error)) return nullptr;
+#if WINAPK_HOST_ARM64
+    if (img->is_arm64() && !img->check_x18(file, error)) return nullptr;
+    if (img->is_arm64()) {
+        // Raw Linux system calls become traps the runtime answers (arm64_guest.h, patch_svc).
+        const arm64::ElfCode code = arm64::elf_code(file.data(), file.size());
+        size_t unsupported = 0;
+        for (const arm64::ExecRange& r : code.ranges) {
+            if (img->in_image(r.vaddr, r.size)) arm64::patch_svc(img->at<uint8_t>(r.vaddr), r.size, &unsupported);
+        }
+        if (unsupported) {
+            *error = "has " + std::to_string(unsupported) + " `svc` instruction(s) with a non-zero immediate: not a Linux system call";
+            return nullptr;
+        }
+    }
+#endif
     if (!img->read_dynamic(error)) return nullptr;
     if (img->has_tls_) {
         if (img->tls_filesz_ && !img->in_image(img->tls_vaddr_, img->tls_filesz_)) {
@@ -678,10 +701,11 @@ bool ElfImage::protect_segments(std::string* error) {
     for (const Segment& s : loads_) {
         const size_t first = (page_down(s.vaddr) - lo_vaddr_) / kPage;
         const size_t last = (page_up(s.vaddr + s.memsz) - lo_vaddr_) / kPage;
-        // arm64 text is read by the interpreter, never executed by the host:
+        // On an x64 host arm64 text is read by the interpreter, never executed:
         // keeping it non-executable is also what routes host calls into it
-        // through the exception handler (arm64_guest.h).
-        const uint32_t allowed = is_arm64() ? (kPfR | kPfW) : (kPfR | kPfW | kPfX);
+        // through the exception handler (arm64_guest.h). On an arm64 host it
+        // is code like any other.
+        const uint32_t allowed = (is_arm64() && !WINAPK_HOST_ARM64) ? (kPfR | kPfW) : (kPfR | kPfW | kPfX);
         for (size_t p = first; p < last; ++p) flags[p] |= s.flags & allowed;
     }
     size_t run = 0;
@@ -725,6 +749,25 @@ void ElfImage::seal_relro() {
     DWORD old;
     VirtualProtect(at<uint8_t>(start), end - start, PAGE_READONLY, &old);
 }
+
+#if WINAPK_HOST_ARM64
+// x18 is the TEB on Windows on Arm (arm64_x18.h). WINAPK_ARM64_ALLOW_X18=1 loads such a library anyway.
+bool ElfImage::check_x18(const std::vector<uint8_t>& file, std::string* error) const {
+    const arm64::ElfX18Scan e = arm64::scan_elf_x18(file.data(), file.size());
+    // Reading x18 and restoring a saved context (libunwind's, a longjmp) leave the TEB where it is.
+    if (!e.ok || !e.scan.scratch()) return true;
+    char text[256];
+    std::snprintf(text, sizeof text, "uses register x18 as a scratch register (%llu write(s), the first at file offset 0x%llx)",
+                  static_cast<unsigned long long>(e.scan.writes), static_cast<unsigned long long>(e.scan.first_write));
+    if (GetEnvironmentVariableA("WINAPK_ARM64_ALLOW_X18", nullptr, 0) > 0) {
+        std::fprintf(stderr, "[win.apk] %s: %s; loaded anyway (WINAPK_ARM64_ALLOW_X18)\n", path_.u8string().c_str(), text);
+        return true;
+    }
+    *error = std::string(text) + "; Windows on Arm keeps the thread's TEB in x18, so this library cannot run natively";
+    return false;
+}
+#endif
+
 
 void ElfImage::register_arm64_code() {
     uint64_t text_hash = 0xcbf29ce484222325ull;

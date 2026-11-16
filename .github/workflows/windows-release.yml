@@ -1,7 +1,9 @@
 # Publishes a Win.apk pre-release: builds the runtime on Windows, packages it
 # with its Java runtime (bake_jre.sh) and ANGLE (the same folder as CI's winapk-preview
 # artifact), makes the installer (windows/package/winapk.iss), and attaches
-# both to a GitHub release for the given tag.
+# both to a GitHub release for the given tag. Twice: x64 (Win.apk-Setup.exe,
+# Win.apk-windows-x64.zip) and ARM64 (Win.apk-Setup-arm64.exe,
+# Win.apk-windows-arm64.zip), each smoke-tested on its own kind of runner.
 name: Windows release
 
 on:
@@ -16,8 +18,71 @@ permissions:
   contents: write
 
 jobs:
+  arm64:
+    # The release job packs and publishes this folder.
+    name: Build ARM64
+    runs-on: windows-11-arm
+    defaults:
+      run:
+        shell: msys2 {0}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+          architecture: aarch64
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: CLANGARM64
+          update: true
+          install: unzip zip git
+          pacboy: >-
+            clang:p
+            cmake:p
+            ninja:p
+            boost:p
+      - name: Build
+        run: |
+          cmake -S windows -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_COMPILER=clang++ \
+            -DWINAPK_JNI_INCLUDE="$(cygpath -u "$JAVA_HOME")/include" \
+            -DWINAPK_VERSION="${{ inputs.tag }}"
+          cmake --build build
+      - uses: actions/cache@v4
+        with:
+          path: thirdparty/framework-res
+          key: framework-res-v2-${{ hashFiles('scripts/build_framework_res.sh', 'windows/scripts/build_framework_res.sh') }}
+      - uses: actions/cache@v4
+        with:
+          path: thirdparty/angle-win
+          key: angle-arm64-${{ hashFiles('windows/scripts/fetch_angle.sh') }}
+      - name: Stage
+        run: |
+          export JAVA_HOME="$(cygpath -u "$JAVA_HOME")"
+          windows/scripts/stage_runtime.sh build Win.apk
+          windows/scripts/bake_jre.sh "$JAVA_HOME" Win.apk/lib Win.apk/jre
+          test -f Win.apk/jre/bin/server/jvm.dll
+          cp windows/package/README.txt THIRD_PARTY_NOTICES.txt Win.apk/
+          cp LICENSE Win.apk/LICENSE.txt
+      - name: Smoke test the package
+        run: |
+          apk=org.secuso.privacyfriendlysudoku_101.apk
+          curl -sSfL -o sudoku.apk "https://f-droid.org/repo/$apk" \
+            || curl -sSfL -o sudoku.apk "https://f-droid.org/archive/$apk"
+          export WINAPK_HEADLESS=1 WINAPK_HEADLESS_EXIT_AFTER_FRAMES=30
+          timeout 600 ./Win.apk/bin/winapk-runtime.exe --apk sudoku.apk --data "$(cygpath -w "$PWD/appdata")" \
+            > boot.log 2>&1 || { tail -n 200 boot.log; exit 1; }
+          grep -E "frames presented" boot.log
+          grep -F "class-data sharing ON" boot.log
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-arm64
+          path: Win.apk/
+          retention-days: 1
+
   release:
     name: Build and publish
+    needs: arm64
     runs-on: windows-latest
     defaults:
       run:
@@ -73,7 +138,13 @@ jobs:
             > boot.log 2>&1 || { tail -n 200 boot.log; exit 1; }
           grep -E "frames presented" boot.log
           grep -F "class-data sharing ON" boot.log
-      - name: Build the installer
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-arm64
+          path: arm64/Win.apk
+      - name: Zip the ARM64 folder
+        run: (cd arm64 && zip -qr ../Win.apk-windows-arm64.zip Win.apk)
+      - name: Build the installers
         shell: pwsh
         run: |
           $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
@@ -82,12 +153,16 @@ jobs:
           $number = ($version -split '[-+]')[0]
           & $iscc "/DSourceDir=$PWD\Win.apk" "/DAppVersion=$version" "/DAppNumber=$number" "/O$PWD" windows\package\winapk.iss
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & $iscc "/DSourceDir=$PWD\arm64\Win.apk" "/DAppVersion=$version" "/DAppNumber=$number" "/DArch=arm64" `
+            "/O$PWD" windows\package\winapk.iss
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Publish
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh release create "${{ inputs.tag }}" Win.apk-Setup.exe Win.apk-windows-x64.zip `
+            Win.apk-Setup-arm64.exe Win.apk-windows-arm64.zip `
             --prerelease --target "${{ github.sha }}" `
             --title "Win.apk ${{ inputs.tag }}" `
             --notes-file windows/package/RELEASE_NOTES.md

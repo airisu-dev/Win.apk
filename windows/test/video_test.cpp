@@ -17,6 +17,7 @@
 // skips what needs them and says which it found.
 
 #include <algorithm>
+#include <cstdlib>
 #include <chrono>
 #include <cmath>
 #include <cstdint>

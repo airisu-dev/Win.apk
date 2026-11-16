@@ -29,7 +29,10 @@
 #include <io.h>
 #include <windows.h>
 #include <bcrypt.h>
+#include "winapk/arch.h"
+#if WINAPK_HOST_X64
 #include <xmmintrin.h>
+#endif
 #include <getopt.h>
 
 // BSD's optreset, which <getopt.h> declares only under _BSD_SOURCE.
@@ -1666,6 +1669,19 @@ WINAPK_GUEST_ABI long long m_llrintf(float x) { return std::llrint(x); }
 // exponent. Out of range (and NaN) is FE_INVALID territory, where Bionic's
 // (FreeBSD's) lround returns LONG_MAX and its lrint the conversion's
 // "integer indefinite", LONG_MIN.
+// The FP rounding mode as MXCSR encodes it: 0 nearest, 1 down, 2 up, 3 toward zero.
+int current_rounding_mode() {
+#if WINAPK_HOST_X64
+    return (_mm_getcsr() >> 13) & 3;
+#else
+    // FPCR.RMode (bits 23:22) has up and down the other way round.
+    uint64_t fpcr;
+    __asm__ volatile("mrs %0, fpcr" : "=r"(fpcr));
+    const int rmode = static_cast<int>((fpcr >> 22) & 3);
+    return rmode == 1 ? 2 : rmode == 2 ? 1 : rmode;
+#endif
+}
+
 enum class QuadRound { kAway, kCurrent };
 int64_t quad_to_int(GuestQuad q, QuadRound how) {
     const uint64_t lo = static_cast<uint64_t>(q[0]), hi = static_cast<uint64_t>(q[1]);
@@ -1698,7 +1714,7 @@ int64_t quad_to_int(GuestQuad q, QuadRound how) {
         if (how == QuadRound::kAway) {
             up = frac >= 0;
         } else {
-            switch ((_mm_getcsr() >> 13) & 3) {  // MXCSR's rounding control, which rint follows
+            switch (current_rounding_mode()) {  // the rounding control rint follows (0 nearest, 1 down, 2 up, 3 zero)
                 case 0: up = frac > 0 || (frac == 0 && (ip & 1)); break;  // to nearest, ties to even
                 case 1: up = neg; break;                                   // down
                 case 2: up = !neg; break;                                  // up
@@ -1750,23 +1766,31 @@ long double quad_to_ld(GuestQuad q) {
     return neg ? -v : v;
 }
 
+}  // namespace
+
+// Through frexp, not the bytes: the host's long double is x87's 80 bits on x64 but a double on arm64. Both are
+// exact in binary128.
 GuestQuad ld_to_quad(long double v) {
-    uint64_t mantissa;
-    uint16_t sign_exp;
-    std::memcpy(&mantissa, &v, 8);
-    std::memcpy(&sign_exp, reinterpret_cast<const char*>(&v) + 8, 2);
-    uint64_t fraction = mantissa & 0x7fffffffffffffffull;
-    uint16_t se = sign_exp;
-    if ((se & 0x7fff) == 0 && mantissa != 0) {  // an 80-bit subnormal: normalize into binary128's range
-        const int sh = __builtin_clzll(mantissa);
-        const uint64_t norm = mantissa << sh;
-        fraction = norm & 0x7fffffffffffffffull;
-        se = static_cast<uint16_t>((se & 0x8000) | ((1 - sh) & 0x7fff));
+    const uint64_t sign = std::signbit(v) ? 1ull << 63 : 0;
+    uint64_t exp = 0, fraction = 0;  // binary128's biased exponent; the fraction's top 64 bits
+    if (std::isnan(v)) {
+        exp = 0x7fff;
+        fraction = 1ull << 63;  // a quiet NaN
+    } else if (std::isinf(v)) {
+        exp = 0x7fff;
+    } else if (v != 0) {
+        int e = 0;
+        const long double m = std::frexp(std::fabs(v), &e);              // in [0.5, 1)
+        const uint64_t sig = static_cast<uint64_t>(std::ldexp(m, 64));  // the leading 1 at bit 63, exactly
+        exp = static_cast<uint64_t>(e - 1 + 16383);
+        fraction = sig << 1;  // binary128's leading 1 is implicit
     }
-    GuestQuad q = {static_cast<long long>(fraction << 49),
-                   static_cast<long long>((static_cast<uint64_t>(se) << 48) | (fraction >> 15))};
+    GuestQuad q = {static_cast<long long>(fraction << 48),
+                   static_cast<long long>(sign | (exp << 48) | (fraction >> 16))};
     return q;
 }
+
+namespace {
 
 #define WINAPK_QUAD1(name, expr) \
     WINAPK_GUEST_ABI GuestQuad m_##name(GuestQuad qx) { const long double x = quad_to_ld(qx); return ld_to_quad(expr); }

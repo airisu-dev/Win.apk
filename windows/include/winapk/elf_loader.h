@@ -152,6 +152,8 @@ private:
     bool protect_segments(std::string* error);
     bool apply_irelative(std::string* error);
     void register_arm64_code();
+    // arm64 host: false, with *error set, if the code uses x18 (arm64_x18.h).
+    bool check_x18(const std::vector<uint8_t>& file, std::string* error) const;
     void call_init_function(uint64_t fn, bool with_args) const;
     void seal_relro();
     void run_initializers();

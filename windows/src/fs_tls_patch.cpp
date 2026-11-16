@@ -2,15 +2,22 @@
 
 #include "winapk/fs_tls_patch.h"
 
+#include "winapk/arch.h"
+
 #include <atomic>
 #include <cstdio>
 #include <cstring>
 #include <mutex>
 
+#if WINAPK_HOST_X64
 #include <intrin.h>
+#endif
 #include <windows.h>
 
 namespace winapk {
+
+// arm64 guests read the stack guard through TPIDR_EL0: nothing to patch.
+#if WINAPK_HOST_X64
 
 namespace {
 
@@ -72,7 +79,7 @@ LONG CALLBACK fix_unpatched_guard_load(EXCEPTION_POINTERS* info) {
         return EXCEPTION_CONTINUE_SEARCH;
     }
     if (rec->ExceptionInformation[0] != 0) return EXCEPTION_CONTINUE_SEARCH;  // a read
-    auto* insn = reinterpret_cast<uint8_t*>(info->ContextRecord->Rip);
+    auto* insn = reinterpret_cast<uint8_t*>(info->ContextRecord->Rip);  // x64 only (see above)
     if (insn[0] != kPrefixFs && insn[0] != kPrefixGs) return EXCEPTION_CONTINUE_SEARCH;
     if (!is_guard_read_after_prefix(insn)) return EXCEPTION_CONTINUE_SEARCH;
     AcquireSRWLockExclusive(&g_fixup_lock);
@@ -104,6 +111,16 @@ void install_fs_stack_guard_fixup() {
 }
 
 size_t fs_stack_guard_sites_fixed_at_run_time() { return g_fixed_at_run_time.load(std::memory_order_relaxed); }
+
+#else  // WINAPK_HOST_ARM64
+
+constexpr uint32_t kStackGuardOffset = 0x28;  // TLS_SLOT_STACK_GUARD * 8
+
+size_t patch_fs_stack_guard_sites(uint8_t*, size_t) { return 0; }
+void install_fs_stack_guard_fixup() {}
+size_t fs_stack_guard_sites_fixed_at_run_time() { return 0; }
+
+#endif
 
 void set_guest_stack_guard_for_current_thread(uint64_t value) {
     auto* tib = reinterpret_cast<NT_TIB*>(NtCurrentTeb());
@@ -179,7 +196,13 @@ size_t commit_guest_stack_for_current_thread() {
 }
 
 uint64_t read_guest_stack_guard_slot() {
+#if WINAPK_HOST_X64
     return __readgsqword(kStackGuardOffset);
+#else
+    uint64_t tp;
+    __asm__ volatile("mrs %0, tpidr_el0" : "=r"(tp));
+    return tp ? *reinterpret_cast<const uint64_t*>(tp + kStackGuardOffset) : 0;
+#endif
 }
 
 }  // namespace winapk

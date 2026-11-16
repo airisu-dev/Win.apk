@@ -5,7 +5,7 @@ blocks them, ranked by how many apps each problem affects.
     sweep.py --runtime <staged runtime dir> --out <report dir>
              [--jdk <dir>] [--apps apps.txt] [--apks <cache dir>]
              [--frames 60] [--timeout 180] [--launcher wine] [--only pkg,...]
-             [--shard I/N] [--only-from smoke.txt] [--require-drew]
+             [--shard I/N] [--only-from smoke.txt] [--skip pkg,...] [--require-drew]
     sweep.py --merge <report dir>... --out <report dir>
 
 --shard I/N runs only every Nth app starting at the Ith (1-based), so N
@@ -13,7 +13,8 @@ machines share the corpus; --merge joins their report directories (report.json,
 logs, frames) into one report, as if one machine had run them all.
 --only-from takes the packages to run from a file (smoke.txt), and
 --require-drew makes the sweep a test: an app that does not draw is run once
-more, and if it still does not the exit code is 1.
+more, and if it still does not the exit code is 1. --skip leaves packages out
+(the ARM64 smoke test skips the libGDX game an ARM64 PC refuses, docs/arm-apps.md).
 
 For each app it runs winapk-runtime with WINAPK_HEADLESS=1 and a fresh data
 directory, waits for --frames presented frames (or the timeout), and keeps the
@@ -311,6 +312,7 @@ def main():
     ap.add_argument("--shard", default="1/1", help="I/N: every Nth app from the Ith (1-based)")
     ap.add_argument("--merge", nargs="+", metavar="DIR", help="join these report directories into --out")
     ap.add_argument("--only-from", metavar="FILE", help="run only the packages this file lists (smoke.txt)")
+    ap.add_argument("--skip", default="", help="packages not to run, comma-separated: ones this host cannot run")
     ap.add_argument("--require-drew", action="store_true",
                     help="exit 1 when an app does not draw, after one more try")
     args = ap.parse_args()
@@ -335,6 +337,8 @@ def main():
     if missing:
         # A smoke app that is not in the corpus would silently not run.
         ap.error("not in " + args.apps + ": " + ", ".join(sorted(missing)))
+    skip = set(filter(None, args.skip.split(",")))
+    apps = [a for a in apps if a[0] not in skip]
     results = []
     for pkg, version, name in apps[index - 1::count]:
         apk = fetch(pkg, version, name, cache)

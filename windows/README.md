@@ -8,7 +8,10 @@ findings, the known gaps and the milestone plan; the
 [user guide](../docs/USER_GUIDE.md) describes what a user sees.
 
 Win.apk is an unofficial port of [Mac.apk](https://github.com/kksimp/Mac.apk)
-to Windows on Intel/AMD (x64). It is not affiliated with or endorsed by the
+to Windows, in two builds: x64 (Intel/AMD), which runs x86_64 app code as it
+is and translates arm64 code, and ARM64 (Windows on Arm), which runs arm64
+app code as it is.
+It is not affiliated with or endorsed by the
 Mac.apk project or Voltare. Win.apk's own code lives in `windows/`;
 `runtime/` (the Android framework in Java and the shared native sources)
 comes from upstream and is kept close to it so that upstream fixes can still
@@ -34,11 +37,12 @@ this repository.
 |---|---|
 | `include/winapk/`, `src/` | The ELF loader (`elf_loader.cpp`), the guest linker (`linker.cpp`), dynamic ELF TLS (`elf_tls.cpp`), the `%fs` stack-guard patch (`fs_tls_patch.cpp`), the ABI thunks (`abi_thunk.cpp`), the guest `JNIEnv` (`guest_jni.cpp`, `jni_slots.inc`), the variadic JNI bridge (`jni_variadic.cpp`), native-method binding (`jni_bind.cpp`), libjnigraphics (`jnigraphics.cpp`) |
 | `src/mini_bionic.cpp`, `src/bionic/` | The Bionic shim: Android's libc, libdl, liblog, libm, libz and the NDK's `ALooper` and `ATrace` on the UCRT and Win32, about 900 System V functions |
-| `src/arm64/` | The arm64 engines: interpreter (`arm64_cpu.cpp`, `arm64_simd.cpp`), JIT (`arm64_jit.cpp`, dynarmic), ahead-of-time translator (`arm64_aot.cpp`) and the AAPCS64 bridge (`arm64_guest.cpp`, `arm64_abi.cpp`) |
+| `src/arm64/` | On x64, the arm64 engines: interpreter (`arm64_cpu.cpp`, `arm64_simd.cpp`), JIT (`arm64_jit.cpp`, dynarmic), ahead-of-time translator (`arm64_aot.cpp`) and the AAPCS64 bridge (`arm64_guest.cpp`). On ARM64, `arm64_native.cpp` instead: the same interface for code that runs as it is (per-thread `TPIDR_EL0` block, the TLSDESC resolver, `svc #0` answered by the shim). Both: `arm64_abi.cpp`, the shim functions whose structs, flags or system call numbers arm64 has differently from x86_64 |
+| `src/abi_thunk_arm64.cpp`, `include/winapk/arm64_x18.h` | ARM64 only: the AArch64 JNI, variadic and entry thunks (a small A64 assembler); the x18 scan that refuses a library using x18 as scratch (Windows keeps the TEB there) |
 | `host/` | `winapk-runtime.exe` (`runtime_main.cpp`), the app window (`win32_window.cpp`), the host natives (`native_*.cpp`, one file per Java class; `host_natives.cpp` binds them), the GL layer (`gl/`), the app-library loading path (`guest_libs.cpp`, `guest_stub.cpp`, `translator_main.cpp`), shared storage (`user_folders.cpp`), java.io's file opens with `FILE_SHARE_DELETE` (`java_io_open.cpp`), class-data sharing (`cds.cpp`, `cds_util.cpp`) |
 | `launcher/` | `Win.apk.exe`, the app library, the install helper and the permission dialogs (`launcher_main.cpp`, `launcher.rc`, the icon), and its state machines, each a header the unit test drives (`app_runs.h`: an app's run; `installs.h`: an install; `updates.h`: the update check and download) |
 | `java/` | Windows-only Java: `com.winapk.tools.AppInstall` and `AppMeta` (`winapk-tools.jar`), `java_base_patch/` (an overlay for `java.base`), and `winapk-framework.classlist` (the classes of the framework archive, `host/cds.h`) |
-| `tools/` | `winapk-elfrun` (the loader test runner), `winapk-jvm-run` (the real-JVM test), `winapk-aot` (`arm64_aot_main.cpp`), and the generators `gen_jni_slots.py`, `gen_gl_stubs.py`, `gen_icon.py` |
+| `tools/` | `winapk-elfrun` (the loader test runner), `winapk-jvm-run` (the real-JVM test), `winapk-aot` (`arm64_aot_main.cpp`, x64 only), `winapk-x18scan` (`x18scan_main.cpp`: which arm64 libraries an ARM64 PC refuses, and why), and the generators `gen_jni_slots.py`, `gen_gl_stubs.py`, `gen_icon.py` |
 | `scripts/` | `build_java.sh`, `build_framework_res.sh`, `fetch_angle.sh`, `fetch_webview2.sh`, `stage_clang.sh`, `stage_runtime.sh`, `bake_jre.sh` (the JRE Win.apk ships), `merge_classlists.py` |
 | `test/` | The unit tests (`*_test.cpp`), the guest test libraries (`guest/`, built with plain clang + lld, no NDK), the Java tests (`java/`), the Wine runners (`run_*_wine.sh`), the compatibility sweep (`compat/`) |
 | `package/` | The installer (`winapk.iss`, Inno Setup), `README.txt` and `RELEASE_NOTES.md` shipped with a release |
@@ -51,7 +55,8 @@ this repository.
 
 Toolchain: clang only. MSVC cannot emit System V calls, and MinGW GCC 13
 emits broken SEH unwind data for `sysv_abi` functions. CI builds on
-`windows-latest` with MSYS2 CLANG64 and Temurin 21.
+`windows-latest` with MSYS2 CLANG64 and Temurin 21, and the ARM64 build on
+`windows-11-arm` with MSYS2 CLANGARM64 ([below](#on-a-windows-on-arm-pc-arm64)).
 
 In an [MSYS2](https://www.msys2.org/) CLANG64 shell, with a JDK 21 installed
 and `JAVA_HOME` pointing at it:
@@ -110,6 +115,36 @@ windows/scripts/bake_jre.sh "$JAVA_HOME" runtime/lib runtime/jre
   AOSP sources with Google's standalone `aapt2` (9.x or later), through
   upstream's `scripts/build_framework_res.sh`. The result is cached under
   `thirdparty/framework-res`.
+
+### On a Windows on Arm PC (ARM64)
+
+The native build: arm64 app code runs as machine code, with no translation and
+no emulation of Win.apk itself. In an MSYS2 CLANGARM64 shell, with Temurin 21
+for Windows aarch64 in `JAVA_HOME` (another aarch64 JDK's `jni_md.h` makes
+`jint` a `long`, which `host/binder_win.cpp` and upstream's GL bridges do not
+compile with):
+
+```sh
+pacman -S mingw-w64-clang-aarch64-{clang,cmake,ninja,zlib,boost}
+cmake -S windows -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DWINAPK_JNI_INCLUDE="$JAVA_HOME/include"
+cmake --build build
+windows/scripts/stage_runtime.sh build runtime
+windows/scripts/bake_jre.sh "$JAVA_HOME" runtime/lib runtime/jre
+```
+
+- CMake sees the target (`WINAPK_HOST_ARM64`, `include/winapk/arch.h`) and
+  builds `src/arm64/arm64_native.cpp` and `src/abi_thunk_arm64.cpp` in place
+  of the engines, the System V thunks and the `%fs` patch. `WINAPK_ARM64_JIT`
+  does nothing here, and `winapk-aot`, its cache test and its crash guard's
+  test are not built.
+- `stage_runtime.sh` reads the runtime's machine type (`scripts/arch.sh`) and
+  stages Electron's win32-arm64 ANGLE and the WebView2 SDK's arm64 loader; it
+  stages no translator and no `clang/`. `aapt2` (the resource build) has no
+  ARM64 build and runs under Windows' x64 emulation; nothing of it ships.
+- The installer: `iscc /DSourceDir=<folder> /DArch=arm64 package\winapk.iss`
+  makes `Win.apk-Setup-arm64.exe` (ARM64 PCs only).
+- If `mirror.msys2.org` answers 403, put another mirror first in
+  `C:\msys64\etc\pacman.d\mirrorlist.mingw`.
 
 ## Build on Linux and run under Wine
 
@@ -207,6 +242,7 @@ The user-facing ones (`WINAPK_PHONE_SIZE`, `WINAPK_RESIZABLE`,
 | `MACAPK_HOVER_EVENTS=0` | The pointer over the app sends no hover events |
 | `MACAPK_MOUSE_POINTER=0` | The right and the middle mouse button and the hovering pointer are not reported to the app |
 | `WINAPK_ARM64_ENGINE=interp` | Forces the arm64 interpreter instead of the JIT |
+| `WINAPK_ARM64_ALLOW_X18=1` | ARM64 build only: loads an arm64 library although it uses register x18 as scratch (`include/winapk/arm64_x18.h`), to see what it does. Windows keeps the thread's TEB in x18, so the first exception or Windows call made while the library's value is there ends the process |
 | `WINAPK_ARM64_STATS=1` | Prints at exit where the guest's time went (host functions versus arm64 code, transitions, interpreter fallbacks), and the same for the eight busiest threads still running |
 | `WINAPK_AOT_EH_FRAME=0` | `winapk-aot` leaves out the functions `.eh_frame_hdr` lists (for comparing) |
 | `WINAPK_ARM64_FP=exact` | Keeps the arm64 JIT's floating point bit-exact (it uses the host's FMA otherwise) |
@@ -235,6 +271,16 @@ The Java framework has many more `MACAPK_*` switches of upstream's; grep
 Every test is a program built by CMake; `ci.yml` runs each of them on
 `windows-latest`, and `test/run_*_wine.sh` run the main ones under Wine.
 
+The ARM64 build runs the ones that mean something there, on `windows-11-arm`
+("Unit tests (ARM64)"): the thunk, JNI and variadic tests (the AArch64
+thunks), `winapk-x18-scan-test`, `winapk-arm64-test` (native execution, `svc`,
+signals), the linker and Bionic tests on the aarch64 builds of their libraries
+(`guest/aarch64/`), the crash test, the host-only tests and `winapk-jvm-run`
+with the arm64 library. Not there: `winapk-elfrun` (the x86_64 `%gs`/`%fs`
+patches), the translator's cache and crash-guard tests (no translation on that
+host), and the Bionic test's signal checks (they read x86_64's `ucontext_t`;
+`arm64_signal_guest.c` has arm64's).
+
 | Program | What it checks |
 |---|---|
 | `winapk-elfrun <poc.so> <poc_packed.so>` | Two builds of the Android test library (plain RELA, and APS2 + RELR) load and run: argument passing across the ABI boundary, RELATIVE and `R_X86_64_64` relocations, constructors, shim calls, stack-protected code on new threads, a stack-guard load in code the guest writes at run time (patched when it faults), a guest comparator in host `qsort`, a host callback from guest code |
@@ -247,9 +293,10 @@ Every test is a program built by CMake; `ci.yml` runs each of them on
 | `winapk-video-test <test/video dir>` | The Media Foundation video backend without a JVM: the YUV converter, a decoder MFT, the source reader and the player on `test/video/color.mp4` (1 s of H.264 + AAC); decoder checks are skipped where no H.264 MFT exists. Then what recording and `MediaExtractor` stand on: the demuxer on that file (tracks, csd, samples into the decoders), the H.264 and AAC encoders (codec config first, key frames, times; decoded back), and the MP4 writer (its file read back by the demuxer and the source reader). It prints the encoder MFTs the machine has and skips what needs a missing one |
 | `winapk-thunk-test` | Native-method thunks with mixed, stack-overflowing and narrow arguments; the variadic entry stub's `va_list`; the tagged zero stub |
 | `winapk-jni-test`, `winapk-jni-variadic-test` | The guest `JNIEnv` against a mock JVM; the variadic bridge for all four call kinds and every argument type, through `...` and `va_list` |
-| `winapk-linker-test <dir>` | A four-library tree with a `DT_NEEDED` cycle and a runtime plugin: constructor order, symbol resolution and its order (libc at its place in `DT_NEEDED`, the global group before it), `dlsym` scopes, the guest's `dlopen`, `dlsym`, `dlerror` and `dladdr`, a library opened by its Android path |
-| `winapk-bionic-test <bionic_guest.so> <scratch dir>` | `test/guest/bionic_guest.c` exercises the shim from guest code: strings, printf and scanf through the System V `va_list`, threads and keys, files and directories, ELF TLS, system properties, locales, futex, an 8 GiB `PROT_NONE` reservation, pipes, eventfd, epoll, sockets, `ALooper`, clocks, `mmap`; the network (loopback only): a UDP datagram, socket options that are mapped, accepted as tuning or refused with `ENOPROTOOPT`, `SO_LINGER`, a multicast group joined with `IP_ADD_MEMBERSHIP` and with `MCAST_JOIN_GROUP` and a datagram received through each (skipped where the host has no multicast route), `if_nametoindex`/`if_indextoname`/`if_nameindex` against `getifaddrs`, edge-triggered epoll on a socket (`EPOLLOUT` once, then a 300 ms wait that takes 300 ms and no processor time; `EPOLLIN` once per arrival and read) and on an eventfd (every write), `EPOLLONESHOT`, `epoll_wait` and `poll` woken by another thread's send; `random(3)` against glibc's sequences (the same generator), `fts` walks, `link`, `popen`/`system` without a shell, `fscanf`, `strptime`, cleanup handlers run by `pthread_exit`, `sched_getaffinity`, FORTIFY's `FD_*`, the binary128 `lroundl` family; the calls the loader's missing-function stub used to answer with 0 (`test_missing_forms`): FORTIFY's `__pwrite_chk`, `__poll_chk`, `__getcwd_chk` and the string forms, `readv`/`writev`, `sendfile`, `truncate`, `renameat2`, `readdir_r`, `rewinddir`, `scandir`, `mkstemps`, `getc_unlocked`, `epoll_pwait2`, `sigwait`/`sigtimedwait`, `pthread_spin_lock`, `pthread_mutex_clocklock`, `sem_clockwait`, `ASharedMemory_create`, `sysinfo`, and that `posix_spawn`, `execv`, `wait4`, `openpty`, `inotify_init1`, `iconv_open`, `regcomp`, `mremap`, `symlink` and `gethostbyname_r` fail as Linux reports it |
+| `winapk-linker-test <dir>` | (`guest/link`, or `guest/aarch64/link` on ARM64) A four-library tree with a `DT_NEEDED` cycle and a runtime plugin: constructor order, symbol resolution and its order (libc at its place in `DT_NEEDED`, the global group before it), `dlsym` scopes, the guest's `dlopen`, `dlsym`, `dlerror` and `dladdr`, a library opened by its Android path |
+| `winapk-bionic-test <bionic_guest.so> <scratch dir>` | (`guest/`, or `guest/aarch64/` on ARM64, where the library's imports of the calls arm64 lays out differently bind to `src/arm64/arm64_abi.cpp`: `struct stat`, `struct epoll_event`, `open`'s flags, `syscall()`'s numbers; the binary128 `long double` results are checked by their bits on both) `test/guest/bionic_guest.c` exercises the shim from guest code: strings, printf and scanf through the guest's `va_list`, threads and keys, files and directories, ELF TLS, system properties, locales, futex, an 8 GiB `PROT_NONE` reservation, pipes, eventfd, epoll, sockets, `ALooper`, clocks, `mmap`; the network (loopback only): a UDP datagram, socket options that are mapped, accepted as tuning or refused with `ENOPROTOOPT`, `SO_LINGER`, a multicast group joined with `IP_ADD_MEMBERSHIP` and with `MCAST_JOIN_GROUP` and a datagram received through each (skipped where the host has no multicast route), `if_nametoindex`/`if_indextoname`/`if_nameindex` against `getifaddrs`, edge-triggered epoll on a socket (`EPOLLOUT` once, then a 300 ms wait that takes 300 ms and no processor time; `EPOLLIN` once per arrival and read) and on an eventfd (every write), `EPOLLONESHOT`, `epoll_wait` and `poll` woken by another thread's send; `random(3)` against glibc's sequences (the same generator), `fts` walks, `link`, `popen`/`system` without a shell, `fscanf`, `strptime`, cleanup handlers run by `pthread_exit`, `sched_getaffinity`, FORTIFY's `FD_*`, the binary128 `lroundl` family; the calls the loader's missing-function stub used to answer with 0 (`test_missing_forms`): FORTIFY's `__pwrite_chk`, `__poll_chk`, `__getcwd_chk` and the string forms, `readv`/`writev`, `sendfile`, `truncate`, `renameat2`, `readdir_r`, `rewinddir`, `scandir`, `mkstemps`, `getc_unlocked`, `epoll_pwait2`, `sigwait`/`sigtimedwait`, `pthread_spin_lock`, `pthread_mutex_clocklock`, `sem_clockwait`, `ASharedMemory_create`, `sysinfo`, and that `posix_spawn`, `execv`, `wait4`, `openpty`, `inotify_init1`, `iconv_open`, `regcomp`, `mremap`, `symlink` and `gethostbyname_r` fail as Linux reports it |
 | `winapk-arm64-test <dir>` | The arm64 engines: `test/guest/arm64_isa.c` built for the host and for arm64 at three optimization levels must agree on every function, on the interpreter, the JIT and the AOT translation; then `arm64_bridge_guest.c` (calls in both directions, variadics, threads, atexit, `fts` filling arm64's `struct stat`, cleanup handlers); `arm64_flow_guest.c` (returns into an ancestor frame with RET and BR, coroutines, RETAA, deep recursion on a 1 MB thread, saturating conversions, FRECPS/FRSQRTS, an exclusive-monitor counter shared by translated code and the JIT, the STLR/LDAR litmus test) against values worked out by hand; `arm64_patch_guest.c` (a library patching its own code, and code patched by one thread while another runs it), `arm64_eh_guest.cpp` (C++ exceptions through the NDK's libc++ and unwinder, built when `ANDROID_NDK_HOME` names an NDK), a library unloaded with `dlclose`, one linked at another address, a translation cut short under a stamp that says it is sealed (refused) and the same one whole (loaded); 400 functions of random instructions from `gen_arm64_fuzz.py`, whose results on the JIT and the translation must match the interpreter's (`WINAPK_FUZZ_STATE=<i>` starts every function from function i's states, to bisect a difference); and `arm64_bench.c` (the speed ratios) |
+| `winapk-x18-scan-test` | The x18 scan (`include/winapk/arm64_x18.h`) one instruction at a time, each encoding from llvm-mc: which name x18 or w18 as a register (v18, d18 and an immediate 18 do not), which write it (scratch use) and which only read it, the `ldp x18, x19` of a context restore (libunwind, longjmp) that does not count, and a range scan. Plain C++, so it runs on either host |
 | `winapk-aot-stamp-test` | A library's translation stamp (`include/winapk/aot_stamp.h`), with no file behind it: each kind written and read back, an old stamp read as a short one, a newer build's word; what the loader refuses and when it asks for a sealed DLL; for each kind whether the worker has a step to take now (a changed library or translator, another CPU, the back-off after failures and its limit, a pass to finish, a profile that grew, the interval between two translations from a profile); which stamps the launcher takes for "translated by its profile" |
 | `winapk-applink-test` | The App Link sign-in window's decision (`host/applink_match.h`): the navigation that returns to the app is the `redirect_uri` without its query, exactly (scheme and host without case, a default port as none); another path, host, port, scheme, a subdomain, userinfo or the address inside a query is not |
 | `winapk-aot-cache-test <scratch dir>` | The arm64 translation's files (`include/winapk/aot_files.h`) in real processes, with `winapk-aot-test-dll.dll` as the translation: a seal against DLLs cut short, emptied, zeroed or changed; eight processes taking, making, putting and loading one cache entry at once (hard links and copies); writers killed at random moments and at each step of a write; broken cache entries deleted and replaced; eviction and replacement while another process has the DLL loaded; the clock (60 days, dates in the future, the size cap); stamps rewritten by four processes while another reads them |
@@ -282,7 +329,7 @@ problem affects:
 ```sh
 python windows/test/compat/sweep.py --runtime <staged runtime> --out <report dir> \
     [--jdk <dir>] [--apps apps.txt] [--apks <cache dir>] [--frames 60] [--timeout 180] \
-    [--launcher wine] [--only pkg,...] [--shard I/N] [--only-from smoke.txt] [--require-drew]
+    [--launcher wine] [--only pkg,...] [--shard I/N] [--only-from smoke.txt] [--skip pkg,...] [--require-drew]
 python windows/test/compat/sweep.py --merge <report dir>... --out <report dir>
 ```
 
@@ -295,15 +342,17 @@ lacks and the libraries that could not load. Each line of an app's log
 (`logs/<package>.log`) starts with the seconds since its start, so an app that
 misses the frame budget shows where its time went. `--shard I/N` runs every Nth
 app from the Ith, and `--merge` joins the shards' report directories into one.
-`--only-from` runs only the packages a file lists, and `--require-drew` makes
-the sweep a test: an app that does not draw gets one more try, then the exit
-code is 1.
+`--only-from` runs only the packages a file lists, `--skip` leaves packages
+out, and `--require-drew` makes the sweep a test: an app that does not draw
+gets one more try, then the exit code is 1.
 
 In CI, every pull request that touches the runtime boots the smoke set,
 `test/compat/smoke.txt`: ten apps, one of each kind (Java, Kotlin, Compose,
 JNI, libGDX, SDL, NativeActivity, React Native, a WebView shell, an
 arm64-only build), all of which draw today, with `--require-drew`. Keep only
-apps that reliably draw in it. The whole corpus runs only when asked for:
+apps that reliably draw in it. The ARM64 build boots the same set less Klooni
+(`--skip`): its libGDX uses x18 and is refused, so the job checks instead that
+Klooni ends and its log says why. The whole corpus runs only when asked for:
 Actions > CI > Run workflow on the branch, with "Full compatibility sweep"
 ticked (the default). It gives each app 300 frames (5 s) after its first,
 where the smoke set has 150: a slow first start (LocalSend, a Flutter app
@@ -323,14 +372,14 @@ bytes read then. `docs/research/startup-cds.md` has its numbers.
 | Workflow | Trigger | What it does |
 |---|---|---|
 | `.github/workflows/ci.yml` | Pull requests touching `windows/` or `runtime/`; by hand; a push to `main` (build only) | The pipeline below |
-| `.github/workflows/windows-release.yml` | By hand only, with a tag such as `v0.2.0-preview` | Builds with `-DWINAPK_VERSION=<tag>`, stages, packages `Win.apk-windows-x64.zip` with the JRE from `bake_jre.sh` and `package/README.txt`, smoke-tests the package (boots an APK headless), builds `Win.apk-Setup.exe` with Inno Setup, and publishes both as a GitHub pre-release with `package/RELEASE_NOTES.md` as the notes |
+| `.github/workflows/windows-release.yml` | By hand only, with a tag such as `v0.2.0-preview` | Builds with `-DWINAPK_VERSION=<tag>` twice, x64 on `windows-latest` and ARM64 on `windows-11-arm`, stages each with the JRE from `bake_jre.sh` and `package/README.txt`, smoke-tests each package on its own kind of machine (boots an APK headless), builds `Win.apk-Setup.exe` and `Win.apk-Setup-arm64.exe` with Inno Setup, and publishes them with `Win.apk-windows-x64.zip` and `Win.apk-windows-arm64.zip` as a GitHub pre-release with `package/RELEASE_NOTES.md` as the notes. The launcher's update check takes the arm64 installer on an ARM64 PC, an x64 copy there too (both installers have one AppId) |
 
 `ci.yml`'s jobs, in the order they can start:
 
 | Job | Runs on | Needs | What |
 |---|---|---|---|
 | What changed | Ubuntu | | Reads the pull request's files: docs alone run nothing; `launcher/` or `package/` alone build and package but run no app; anything else runs everything. By hand, everything; a push to `main`, the build alone |
-| Guest libraries | Ubuntu | What changed | The x86_64 and arm64 test libraries and the end-to-end inputs (`test/build_guest.sh`, `test/build_e2e.sh`) |
+| Guest libraries | Ubuntu | What changed | The x86_64 and arm64 test libraries, the linker and Bionic tests' libraries again for an arm64 host (`aarch64/`), and the end-to-end inputs (`test/build_guest.sh`, `test/build_e2e.sh`) |
 | Launcher check | Ubuntu | What changed | The launcher compiled with MinGW-w64, warnings as errors: an answer in about a minute |
 | Build | `windows-latest` | What changed | Every CMake target with MSYS2 CLANG64 through ccache (the cache is restored from the newest run, `main`'s for a pull request's first one), then `stage_runtime.sh build stage` and `bake_jre.sh` into `stage/jre`. Uploads `winapk-binaries` (every exe) and `runtime-stage` |
 | Unit tests | `windows-latest` | Guest libraries, Build | Every test program above, the arm64 AOT translation included |
@@ -339,6 +388,10 @@ bytes read then. `docs/research/startup-cds.md` has its numbers.
 | Sweep 1/4 to 4/4 | `windows-latest` × 4 | Build | Only by hand, with "Full compatibility sweep": a quarter of the corpus each (`--shard`), each with its own APK cache, on the staged JRE with one framework archive (`--cds-prepare`) |
 | Sweep report | Ubuntu | Sweep | `sweep.py --merge`: the run's summary and the `compat-sweep` artifact |
 | Package | `windows-latest` | Build | The staged folder with its JRE (`winapk-preview`) and the installer (`winapk-setup`); beside the tests, not after them |
+| Build (Windows ARM64) | `windows-11-arm` | What changed | The native Windows on Arm build: MSYS2 CLANGARM64, Temurin 21 aarch64, its own ccache; stages into `stage/` and checks every staged program is ARM64. Uploads `winapk-binaries-arm64` and `runtime-stage-arm64` |
+| Unit tests (ARM64) | `windows-11-arm` | Guest libraries, Build (ARM64) | The tests listed under [Tests](#tests) for the ARM64 build |
+| App smoke test (ARM64) | `windows-11-arm` | Build (ARM64) | The smoke set less Klooni (`--skip`), `--require-drew`; then Klooni alone, whose log must say it cannot run on this PC (x18) (`smoke-arm64` artifact) |
+| Package (ARM64 preview + installer) | `windows-latest` | Build (ARM64) | `winapk-preview-arm64` and `Win.apk-Setup-arm64.exe` (`winapk-setup-arm64`, `/DArch=arm64`); Inno Setup only packs, so an x64 runner does it |
 
 A new push to a pull request cancels its run in progress. Nothing is released
 automatically. The platform resource APK, ANGLE, the compile cache and the
