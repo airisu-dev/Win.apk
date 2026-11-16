@@ -98,6 +98,9 @@ ARM64=(
 # Raw Linux system calls (svc #0, arm64_svc_guest.c).
 "$CC" "${ARM64[@]}" -O2 -mno-outline-atomics -Wl,-soname,libwinapk_arm64_svc.so \
     -o "$ARM64_OUT/libwinapk_arm64_svc.so" "$HERE/guest/arm64_svc_guest.c"
+# Signals delivered to guest handlers (arm64_signal_guest.c).
+"$CC" "${ARM64[@]}" -O2 -mno-outline-atomics -Wl,-soname,libwinapk_arm64_signal.so \
+    -o "$ARM64_OUT/libwinapk_arm64_signal.so" "$HERE/guest/arm64_signal_guest.c"
 # Control flow and edge cases (arm64_flow_guest.c), and a library the test
 # unloads with dlclose (arm64_isa.c again).
 "$CC" "${ARM64[@]}" -O2 -mno-outline-atomics -Wl,-soname,libwinapk_arm64_flow.so \

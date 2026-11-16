@@ -572,6 +572,31 @@ void run_svc(winapk::GuestLinker& linker, const char* file) {
     check("another thread's gettid is its own", static_cast<uint32_t>(other) != GetCurrentThreadId());
 }
 
+// Signals delivered to arm64 guest handlers (arm64_signal_guest.c); arm64 host only.
+void run_signals(winapk::GuestLinker& linker, const char* file) {
+    std::printf("%s\n", file);
+    std::string error;
+    void* lib = linker.open(file, winapk::GuestLinker::kRtldNow, &error);
+    check("open", lib != nullptr, error);
+    if (!lib) return;
+    auto call0 = [&](const char* name) -> int64_t {
+        void* f = sym(linker, lib, name);
+        return f ? static_cast<int64_t>(static_cast<int32_t>(winapk::arm64::call(f))) : -999999;  // an int: the upper half of x0 is undefined
+    };
+    check("a SIGSEGV handler redirects pc: the thread resumes in the function it chose", call0("sig_redirect") == 77);
+    check("... it saw si_code SEGV_MAPERR (1) and si_addr 16", call0("sig_code") == 1 && call0("sig_addr") == 16);
+    check("... a ucontext with pc, sp, the fault address and an fpsimd_context", call0("sig_ucontext_ok") == 1);
+    check("a handler that makes the page accessible: the load is retried", call0("sig_fix_mapping") == 1);
+    check("a handler sets x0 and skips the load: the function returns it", call0("sig_regs") == 1234);
+    check("brk #1 is SIGTRAP, TRAP_BRKPT (1)", call0("sig_trap") == 1 && call0("sig_code") == 1);
+    check("raise() runs the handler before returning, with siginfo and ucontext", call0("sig_raise") == 1);
+    check("... as a tkill (SI_TKILL -6)", call0("sig_raise_code") == -6);
+    check("... with its signal blocked while it runs", call0("sig_mask_blocked") == 1);
+    check("SA_ONSTACK: the handler runs on the alternate stack, uc_stack says so", call0("sig_altstack") == 1);
+    check("siglongjmp out of a SIGSEGV handler, three times (the mask comes back)", call0("sig_longjmp") == 1);
+    check("pthread_kill: the handler runs on the target thread", call0("sig_thread") == 1);
+}
+
 void run_unload(winapk::GuestLinker& linker, const char* file) {
     std::printf("%s\n", file);
     std::string error;
@@ -960,6 +985,9 @@ int main(int argc, char** argv) {
         run_eh(linker, std::filesystem::u8path(argv[1]));
         run_unload(linker, "libwinapk_arm64_unload.so");
         run_svc(linker, "libwinapk_arm64_svc.so");
+#if WINAPK_HOST_ARM64
+        run_signals(linker, "libwinapk_arm64_signal.so");
+#endif
 #if !WINAPK_HOST_ARM64  // code the engines translate or patch: nothing to do for native code
         run_patch(linker, e.first == winapk::arm64::Engine::kAot   ? "libwinapk_arm64_patch_aot.so"
                           : e.first == winapk::arm64::Engine::kJit ? "libwinapk_arm64_patch_jit.so"
