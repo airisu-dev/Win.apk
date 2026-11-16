@@ -754,10 +754,11 @@ void ElfImage::seal_relro() {
 // x18 is the TEB on Windows on Arm (arm64_x18.h). WINAPK_ARM64_ALLOW_X18=1 loads such a library anyway.
 bool ElfImage::check_x18(const std::vector<uint8_t>& file, std::string* error) const {
     const arm64::ElfX18Scan e = arm64::scan_elf_x18(file.data(), file.size());
-    if (!e.ok || !e.scan.found()) return true;
+    // Reading x18 and restoring a saved context (libunwind's, a longjmp) leave the TEB where it is.
+    if (!e.ok || !e.scan.scratch()) return true;
     char text[256];
-    std::snprintf(text, sizeof text, "uses register x18 in %llu instruction(s), the first at file offset 0x%llx",
-                  static_cast<unsigned long long>(e.scan.uses), static_cast<unsigned long long>(e.scan.first_offset));
+    std::snprintf(text, sizeof text, "uses register x18 as a scratch register (%llu write(s), the first at file offset 0x%llx)",
+                  static_cast<unsigned long long>(e.scan.writes), static_cast<unsigned long long>(e.scan.first_write));
     if (GetEnvironmentVariableA("WINAPK_ARM64_ALLOW_X18", nullptr, 0) > 0) {
         std::fprintf(stderr, "[win.apk] %s: %s; loaded anyway (WINAPK_ARM64_ALLOW_X18)\n", path_.u8string().c_str(), text);
         return true;
@@ -766,6 +767,7 @@ bool ElfImage::check_x18(const std::vector<uint8_t>& file, std::string* error) c
     return false;
 }
 #endif
+
 
 void ElfImage::register_arm64_code() {
     uint64_t text_hash = 0xcbf29ce484222325ull;

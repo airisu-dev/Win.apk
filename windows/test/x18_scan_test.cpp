@@ -103,7 +103,63 @@ const Case kCases[] = {
     {0xf85eec20, 0, "ldr x0, [x1, #-18]!"},
 };
 
+// Does the instruction write x18 (not just read it)?
+const Case kWriteCases[] = {
+    {0xd37ef5d2, 1, "lsl x18, x14, #2"},
+    {0xb8726972, 1, "ldr w18, [x11, x18]"},
+    {0xf9400012, 1, "ldr x18, [x0]"},
+    {0x8b020032, 1, "add x18, x1, x2"},
+    {0xaa0003f2, 1, "mov x18, x0"},
+    {0xd28000b2, 1, "movz x18, #5"},
+    {0xf800865e, 1, "str x30, [x18], #8"},
+    {0xf85f8e5e, 1, "ldr x30, [x18, #-8]!"},
+    {0xa9810640, 1, "stp x0, x1, [x18, #16]!"},
+    {0xa8c10e42, 1, "ldp x2, x3, [x18], #16"},
+    {0xa94007f2, 1, "ldp x18, x1, [sp]"},
+    {0xf9400240, 0, "ldr x0, [x18]"},
+    {0xf9400640, 0, "ldr x0, [x18, #8]"},
+    {0xf9000012, 0, "str x18, [x0]"},
+    {0xa9094c12, 0, "stp x18, x19, [x0, #0x90]"},
+    {0xaa1203e0, 0, "mov x0, x18"},
+    {0x91002240, 0, "add x0, x18, #8"},
+    {0xf100165f, 0, "cmp x18, #5"},
+    {0x2c38764d, 0, "stnp s13, s29, [x18, #-0x40]"},
+    {0xad000640, 0, "stp q0, q1, [x18]"},
+    {0x3dc00640, 0, "ldr q0, [x18, #16]"},
+    {0xb4000052, 0, "cbz x18, #8"},
+    {0xd61f0240, 0, "br x18"},
+    {0xfc727820, 0, "ldr d0, [x1, x18, lsl #3]"},
+    {0xb8326820, 0, "str w0, [x1, x18]"},
+    {0xfa431a40, 0, "ccmp x18, #3, #0, ne"},
+    {0x9a920020, 0, "csel x0, x1, x18, eq"},
+    {0x9e670240, 0, "fmov d0, x18"},
+    {0x9e620240, 0, "scvtf d0, x18"},
+    {0xd51bd052, 0, "msr tpidr_el0, x18"},
+    {0xf9800240, 0, "prfm pldl1keep, [x18]"},
+    {0xd53bd052, 1, "mrs x18, tpidr_el0"},
+    {0x9e780012, 1, "fcvtzs x18, d0"},
+    {0x0e0c3c12, 1, "umov w18, v0.s[1]"},
+    {0x58000812, 1, "ldr x18, 0x100"},
+    {0xf8e00032, 1, "ldaddal x0, x18, [x1]"},
+    {0xc85f7c12, 1, "ldxr x18, [x0]"},
+    {0xc8127c41, 1, "stxr w18, x1, [x2]"},
+    {0xc85f7e40, 0, "ldxr x0, [x18]"},
+    {0x4e040e40, 0, "dup v0.4s, w18"},
+    {0x4e0c1e40, 0, "mov v0.s[1], w18"},
+    {0x4c407240, 0, "ld1 {v0.16b}, [x18]"},
+    {0x4cd27020, 0, "ld1 {v0.16b}, [x1], x18"},
+};
+
 }  // namespace
+
+static void check_restore(int& failed) {
+    const uint32_t restore = 0xa9494c12;      // ldp x18, x19, [x0, #0x90]
+    const uint32_t not_restore = 0xa9405012;  // ldp x18, x20, [x0]
+    const bool ok = winapk::arm64::is_context_restore(restore) && !winapk::arm64::is_context_restore(not_restore) &&
+                    winapk::arm64::writes_x18(restore);
+    std::printf("  [%s] ldp x18, x19 is a context restore, ldp x18, x20 is not\n", ok ? "PASS" : "FAIL");
+    if (!ok) ++failed;
+}
 
 int main() {
     int failed = 0;
@@ -113,6 +169,14 @@ int main() {
         std::printf("  [%s] %-34s %s\n", ok ? "PASS" : "FAIL", c.text, got ? "uses x18" : "no x18");
         if (!ok) ++failed;
     }
+    for (const Case& c : kWriteCases) {
+        const bool got = winapk::arm64::writes_x18(c.word);
+        const bool ok = got == (c.expect != 0);
+        std::printf("  [%s] writes: %-34s %s\n", ok ? "PASS" : "FAIL", c.text, got ? "writes x18" : "no write");
+        if (!ok) ++failed;
+    }
+    // A context restore (libunwind, longjmp) is not a scratch use.
+    check_restore(failed);
     // The range scan: counts, first offset, ignores a short tail.
     const uint8_t code[] = {0x1f, 0x20, 0x03, 0xd5,  // nop
                             0x5e, 0x86, 0x00, 0xf8,  // str x30, [x18], #8

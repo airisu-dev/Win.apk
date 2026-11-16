@@ -12,6 +12,7 @@
 
 #include "winapk/elf64_defs.h"
 
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -117,18 +118,73 @@ inline bool uses_x18(uint32_t i) {
         return false;
     }
 
-    // SVE and SME (op0 0010, and 0000 with bit 31 set) name general registers
-    // as bases, indexes and counters in more forms than are worth decoding:
-    // any of the three register fields, unless the word is plain data. No
-    // Android toolchain emits these without being asked for them.
-    if (op0 == 0x2 || (op0 == 0x0 && bits(i, 31, 31))) return any3;
+    // SVE and SME (op0 0010, and 0000 with bit 31 set) are not scanned: z18 is a vector register.
 
     return false;  // reserved
 }
+// Does the instruction write x18 (a destination, a write-back base, `mrs x18`)? Reading it is harmless.
+// "Yes" when a form is not decoded.
+inline bool writes_x18(uint32_t i) {
+    using namespace x18_detail;
+    if (!uses_x18(i)) return false;
+    const uint32_t rd = bits(i, 4, 0), rn = bits(i, 9, 5), rm = bits(i, 20, 16), ra = bits(i, 14, 10);
+    const uint32_t op0 = bits(i, 28, 25);
+
+    if ((op0 & 0xe) == 0x8) return is18(rd);  // data processing, immediate: Rd
+    if ((op0 & 0xe) == 0xa) {                // branches and system
+        if (bits(i, 31, 22) == 0x354) return bits(i, 21, 21) && is18(rd);  // MRS and SYSL write Rt; MSR and SYS read it
+        if (bits(i, 31, 22) == 0x355) return bits(i, 21, 21) && (is18(rd) || rd == 17);
+        return false;  // CBZ, TBZ, BR: sources
+    }
+    if ((op0 & 0x5) == 0x4) {  // loads and stores
+        const bool v = bits(i, 26, 26) != 0;
+        const uint32_t cls = bits(i, 29, 27), opc = bits(i, 23, 22), op4 = bits(i, 11, 10);
+        const bool load = opc != 0 && !(bits(i, 31, 30) == 3 && opc == 2);  // single-register forms; PRFM is no load
+        if (cls == 0x5) {            // pairs: bit 22 is the load bit, bits 24..23 the addressing mode
+            const bool wb = bits(i, 24, 23) == 1 || bits(i, 24, 23) == 3;
+            return (bits(i, 22, 22) && !v && (is18(rd) || is18(ra))) || (wb && is18(rn));
+        }
+        if (cls == 0x3 && bits(i, 25, 24) == 0) return !v && is18(rd);  // literal: a load
+        if (cls == 0x1) {
+            if (v) return bits(i, 23, 23) && is18(rn);  // SIMD structures: post-index writes the base
+            return bits(i, 22, 22) ? (is18(rd) || is18(ra)) : is18(rm);  // exclusive: loads write Rt, stores write Rs
+        }
+        if (cls == 0x7) {
+            if (bits(i, 24, 24)) return load && !v && is18(rd);  // unsigned offset
+            if (bits(i, 21, 21)) {
+                if (op4 == 0x2) return load && !v && is18(rd);  // register offset
+                if (op4 == 0x0) return !v && is18(rd);          // atomics write Rt (the old value)
+                return (load && !v && is18(rd)) || (op4 == 0x3 && is18(rn));  // LDRAA, LDRAB
+            }
+            return (load && !v && is18(rd)) || ((op4 == 1 || op4 == 3) && is18(rn));  // imm9: post and pre index
+        }
+        return is18(rd) || is18(rn);
+    }
+    if ((op0 & 0x7) == 0x5) return bits(i, 28, 21) == 0xd2 ? false : is18(rd);  // data processing, register
+    if ((op0 & 0x7) == 0x7) {                                                      // FP and SIMD moves
+        if (bits(i, 28, 24) == 0x1e && bits(i, 30, 29) == 0 && (bits(i, 21, 21) == 0 || bits(i, 15, 10) == 0)) {
+            const uint32_t opcode = bits(i, 18, 16);
+            const bool gpr_in_rn = opcode == 2 || opcode == 3 || (bits(i, 21, 21) && opcode == 7);
+            return !gpr_in_rn && is18(rd);
+        }
+        return bits(i, 28, 21) == 0x70 && (bits(i, 14, 11) == 5 || bits(i, 14, 11) == 7) && is18(rd);
+    }
+    return true;
+}
+
+// `ldp x18, x19, [xN, #imm]`: libunwind's jumpto and longjmp restore a context saved on the same thread,
+// so x18 gets the TEB back. Not a scratch use.
+inline bool is_context_restore(uint32_t i) {
+    return (i & 0xffc07c1f) == 0xa9404c12;  // ldp x18, x19, [xN, #imm]: the offset form, any base and offset
+}
+
 struct X18Scan {
     size_t uses = 0;          // instructions that name x18
     size_t first_offset = 0;  // byte offset in the scanned range of the first
+    size_t writes = 0;        // ... that write it (not a context restore): x18 as a scratch register
+    size_t first_write = 0;   // byte offset of the first of those
     bool found() const { return uses != 0; }
+    bool scratch() const { return writes != 0; }  // the code cannot run as it is: x18 is the TEB here
 };
 
 // Scans `len` bytes of little-endian A64 code (4-byte aligned) at `code`.
@@ -140,9 +196,118 @@ inline X18Scan scan_x18(const uint8_t* code, size_t len) {
         if (uses_x18(w)) {
             if (!r.uses) r.first_offset = at;
             ++r.uses;
+            if (writes_x18(w) && !is_context_restore(w)) {
+                if (!r.writes) r.first_write = at;
+                ++r.writes;
+            }
         }
     }
     return r;
+}
+
+// ---- which words are code -------------------------------------------------------------------------------
+//
+// .text can hold strings (BoringSSL's "ARMv8..."), whose words may decode as x18 uses. A word outside every
+// function .eh_frame lists is skipped when its four bytes are printable ASCII; everything else is scanned.
+
+struct FdeRange {
+    uint64_t lo, hi;  // virtual addresses
+};
+
+inline uint64_t eh_read_uleb(const uint8_t*& p, const uint8_t* end) {
+    uint64_t v = 0;
+    for (int shift = 0; p < end && shift < 64; shift += 7) {
+        const uint8_t b = *p++;
+        v |= static_cast<uint64_t>(b & 0x7f) << shift;
+        if (!(b & 0x80)) break;
+    }
+    return v;
+}
+
+// The function ranges a .eh_frame section describes (CIE augmentation "zR", the usual pointer encodings).
+inline std::vector<FdeRange> eh_frame_functions(const uint8_t* sec, size_t size, uint64_t vaddr) {
+    std::vector<FdeRange> out;
+    auto rd32 = [&](size_t at) {
+        uint32_t v;
+        std::memcpy(&v, sec + at, 4);
+        return v;
+    };
+    // The pointer encoding of each CIE, by its offset.
+    struct Cie {
+        size_t at;
+        uint8_t enc;
+    };
+    std::vector<Cie> cies;
+    size_t at = 0;
+    while (at + 4 <= size) {
+        uint64_t len = rd32(at);
+        size_t hdr = 4;
+        if (len == 0) break;
+        if (len == 0xffffffffu) return out;  // 64-bit lengths: not seen in arm64 libraries
+        const size_t next = at + hdr + static_cast<size_t>(len);
+        if (next > size || at + 8 > size) break;
+        const uint32_t id = rd32(at + 4);
+        const uint8_t* p = sec + at + 8;
+        const uint8_t* end = sec + next;
+        if (id == 0) {  // a CIE: version, augmentation string, factors, return register, augmentation data
+            if (p >= end) break;
+            const uint8_t version = *p++;
+            const char* aug = reinterpret_cast<const char*>(p);
+            while (p < end && *p) ++p;
+            const bool z = aug[0] == 'z';
+            if (p < end) ++p;
+            if (version >= 4) p += 2;  // address and segment sizes
+            eh_read_uleb(p, end);      // code alignment
+            eh_read_uleb(p, end);      // data alignment (signed, read the same)
+            if (version == 1) ++p; else eh_read_uleb(p, end);  // return address register
+            uint8_t enc = 0;
+            if (z) {
+                const uint64_t alen = eh_read_uleb(p, end);
+                const uint8_t* a = p;
+                for (const char* c = aug + 1; *c && a < p + alen; ++c) {
+                    if (*c == 'R') enc = *a++;
+                    else if (*c == 'L') ++a;
+                    else if (*c == 'P') { const uint8_t pe = *a++; a += (pe & 7) == 4 ? 8 : 4; }
+                    else if (*c == 'S' || *c == 'B') {}
+                }
+            }
+            cies.push_back({at, enc});
+        } else {  // an FDE: id is the distance back to its CIE
+            const size_t cie_at = at + 4 - id;
+            uint8_t enc = 0x1b;
+            for (const Cie& c : cies) {
+                if (c.at == cie_at) enc = c.enc;
+            }
+            const bool sdata4 = (enc & 0x0f) == 0x0b, udata4 = (enc & 0x0f) == 0x03, pcrel = (enc & 0x70) == 0x10;
+            if ((sdata4 || udata4) && p + 8 <= end) {
+                const size_t loc_at = static_cast<size_t>(p - sec);
+                int64_t loc = sdata4 ? static_cast<int32_t>(rd32(loc_at)) : static_cast<int64_t>(rd32(loc_at));
+                if (pcrel) loc += static_cast<int64_t>(vaddr + loc_at);
+                const uint32_t range = rd32(loc_at + 4);
+                if (range) out.push_back({static_cast<uint64_t>(loc), static_cast<uint64_t>(loc) + range});
+            }
+        }
+        at = next;
+    }
+    std::sort(out.begin(), out.end(), [](const FdeRange& a, const FdeRange& b) { return a.lo < b.lo; });
+    return out;
+}
+
+inline bool in_functions(const std::vector<FdeRange>& fns, uint64_t va) {
+    size_t lo = 0, hi = fns.size();
+    while (lo < hi) {  // the last range that starts at or before va
+        const size_t mid = (lo + hi) / 2;
+        if (fns[mid].lo <= va) lo = mid + 1; else hi = mid;
+    }
+    return lo > 0 && va < fns[lo - 1].hi;
+}
+
+inline bool looks_like_text(uint32_t w) {
+    for (int i = 0; i < 4; ++i) {
+        const uint32_t b = (w >> (8 * i)) & 0xff;
+        if (b != 0 && (b < 0x20 || b > 0x7e)) return false;
+    }
+    return true;
 }
 
 // The code of an arm64 ELF file: its SHF_EXECINSTR sections, or its executable segments when it has no
@@ -155,6 +320,7 @@ struct ExecRange {
 
 struct ElfCode {
     std::vector<ExecRange> ranges;
+    std::vector<FdeRange> functions;  // from .eh_frame, if the file has it
     bool by_sections = false;
     bool ok = false;  // false: not a readable arm64 ELF file
 };
@@ -177,6 +343,18 @@ inline ElfCode elf_code(const uint8_t* file, size_t size) {
             if (sh.sh_type == elf::kShtProgbits && (sh.sh_flags & elf::kShfExecinstr) && inside(sh.sh_offset, sh.sh_size)) {
                 r.by_sections = true;
                 r.ranges.push_back({sh.sh_offset, sh.sh_size, sh.sh_addr});
+            }
+        }
+        // .eh_frame, by name
+        if (eh.e_shstrndx < eh.e_shnum) {
+            elf::Shdr strs;
+            std::memcpy(&strs, file + eh.e_shoff + static_cast<size_t>(eh.e_shstrndx) * eh.e_shentsize, sizeof strs);
+            for (unsigned i = 0; i < eh.e_shnum && inside(strs.sh_offset, strs.sh_size); ++i) {
+                elf::Shdr sh;
+                std::memcpy(&sh, file + eh.e_shoff + static_cast<size_t>(i) * eh.e_shentsize, sizeof sh);
+                if (sh.sh_type != elf::kShtProgbits || sh.sh_name + 10 > strs.sh_size || !inside(sh.sh_offset, sh.sh_size)) continue;
+                if (std::memcmp(file + strs.sh_offset + sh.sh_name, ".eh_frame", 10) == 0)  // with its terminator
+                    r.functions = eh_frame_functions(file + sh.sh_offset, static_cast<size_t>(sh.sh_size), sh.sh_addr);
             }
         }
     }
@@ -206,9 +384,18 @@ inline ElfX18Scan scan_elf_x18(const uint8_t* file, size_t size) {
     r.ok = code.ok;
     r.by_sections = code.by_sections;
     for (const ExecRange& e : code.ranges) {
-        X18Scan s = scan_x18(file + e.offset, static_cast<size_t>(e.size));
-        if (s.found() && !r.scan.uses) r.scan.first_offset = static_cast<size_t>(e.offset) + s.first_offset;
-        r.scan.uses += s.uses;
+        for (uint64_t at = 0; at + 4 <= e.size; at += 4) {
+            uint32_t w;
+            std::memcpy(&w, file + e.offset + at, 4);
+            if (!code.functions.empty() && !in_functions(code.functions, e.vaddr + at) && looks_like_text(w)) continue;
+            if (!uses_x18(w)) continue;
+            if (!r.scan.uses) r.scan.first_offset = static_cast<size_t>(e.offset + at);
+            ++r.scan.uses;
+            if (writes_x18(w) && !is_context_restore(w)) {
+                if (!r.scan.writes) r.scan.first_write = static_cast<size_t>(e.offset + at);
+                ++r.scan.writes;
+            }
+        }
     }
     return r;
 }

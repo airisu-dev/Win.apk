@@ -54,10 +54,13 @@ int main(int argc, char** argv) {
         if (!e.ok) {
             std::printf("%s: not an arm64 library\n", argv[a]);
             status = 2;
-        } else if (e.scan.found()) {
-            std::printf("%s: %zu use(s), first at file offset 0x%zx%s\n", argv[a], e.scan.uses, e.scan.first_offset,
+        } else if (e.scan.scratch()) {
+            std::printf("%s: x18 as a scratch register: %zu write(s), first at file offset 0x%zx (%zu use(s) in all)%s\n",
+                        argv[a], e.scan.writes, e.scan.first_write, e.scan.uses,
                         e.by_sections ? "" : " (no section headers: whole segments scanned)");
             if (status == 0) status = 1;
+        } else if (e.scan.found()) {
+            std::printf("%s: reads x18 or restores a context (%zu use(s)): fine\n", argv[a], e.scan.uses);
         } else {
             std::printf("%s: clean\n", argv[a]);
         }
