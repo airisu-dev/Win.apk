@@ -1533,9 +1533,18 @@ namespace {
 // tree reaches the window as the overlay layer instead (presentOverlayBitmap).
 void JNICALL Cocoa_presentBitmap(JNIEnv* env, jclass, jintArray argb, jint w, jint h) {
     if (!argb || w <= 0 || h <= 0 || env->GetArrayLength(argb) < w * h) return;
-    jint* px = env->GetIntArrayElements(argb, nullptr);
-    if (!px) return;
-    keep_tree_frame(reinterpret_cast<const uint32_t*>(px), w, h);
+    // Into a buffer kept from frame to frame: GetIntArrayElements gave a fresh
+    // copy each time, and at 2834x1693 (19 MB) that took 16-20 ms against 1-2
+    // for a copy into memory already in use.
+    thread_local std::vector<uint32_t> frame;
+    frame.resize(static_cast<size_t>(w) * static_cast<size_t>(h));
+    env->GetIntArrayRegion(argb, 0, w * h, reinterpret_cast<jint*>(frame.data()));
+    if (env->ExceptionCheck()) {
+        env->ExceptionClear();
+        return;
+    }
+    const uint32_t* px = frame.data();
+    keep_tree_frame(px, w, h);
     // While the app's native code shows frames, its next one brings this along.
     // With a GL content view or a surface on screen, the tree is their overlay.
     // When it has gone quiet, the tree still goes over its last frame.
@@ -1549,10 +1558,9 @@ void JNICALL Cocoa_presentBitmap(JNIEnv* env, jclass, jintArray argb, jint w, ji
             gh = g_guest_h;
         }
         if (gw > 0 && gh > 0) present_over_guest(guest.data(), gw, gh);
-        else if (composite_active()) composite_tree_frame(env, reinterpret_cast<const uint32_t*>(px), w, h);
-        else present_pixels(reinterpret_cast<const uint32_t*>(px), w, h);
+        else if (composite_active()) composite_tree_frame(env, px, w, h);
+        else present_pixels(px, w, h);
     }
-    env->ReleaseIntArrayElements(argb, px, JNI_ABORT);
 }
 
 // A view tree frame of which only [l, r) x [t, b) was drawn again (a frame
