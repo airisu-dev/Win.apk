@@ -545,6 +545,33 @@ void run_patch(winapk::GuestLinker& linker, const char* file) {
 
 // A library unloaded with dlclose must take its translation with it: other
 // code mapped there later (another library, a JIT's) is not that code.
+// Raw Linux system calls: the interpreter answers them on an x64 host, a trap does on an arm64 host.
+void run_svc(winapk::GuestLinker& linker, const char* file) {
+    std::printf("%s\n", file);
+    std::string error;
+    void* lib = linker.open(file, winapk::GuestLinker::kRtldNow, &error);
+    check("open (its svc instructions made answerable)", lib != nullptr, error);
+    if (!lib) return;
+    void* getpid_fn = sym(linker, lib, "arm64_svc_getpid");
+    void* gettid_fn = sym(linker, lib, "arm64_svc_gettid");
+    void* unknown_fn = sym(linker, lib, "arm64_svc_unknown");
+    void* write_fn = sym(linker, lib, "arm64_svc_write");
+    void* loop_fn = sym(linker, lib, "arm64_svc_loop");
+    if (!getpid_fn || !gettid_fn || !unknown_fn || !write_fn || !loop_fn) return;
+    check("getpid (172)", static_cast<uint32_t>(winapk::arm64::call(getpid_fn)) == GetCurrentProcessId());
+    check("gettid (178)", static_cast<uint32_t>(winapk::arm64::call(gettid_fn)) == GetCurrentThreadId());
+    check("an unknown number answers -ENOSYS", static_cast<int64_t>(winapk::arm64::call(unknown_fn)) == -38);
+    const char msg[] = "svc write\n";
+    const uint64_t wargs[3] = {1, reinterpret_cast<uint64_t>(msg), sizeof msg - 1};
+    check("write (64) to stdout", winapk::arm64::call(write_fn, wargs, 3) == sizeof msg - 1);
+    const uint64_t n = 100;
+    check("registers survive the calls of a loop", winapk::arm64::call(loop_fn, &n, 1) == 3 * (100 * 99 / 2) + 100);
+    uint64_t other = 0;
+    std::thread t([&] { other = winapk::arm64::call(gettid_fn); });
+    t.join();
+    check("another thread's gettid is its own", static_cast<uint32_t>(other) != GetCurrentThreadId());
+}
+
 void run_unload(winapk::GuestLinker& linker, const char* file) {
     std::printf("%s\n", file);
     std::string error;
@@ -932,6 +959,7 @@ int main(int argc, char** argv) {
         run_tls(linker, "libwinapk_arm64_tls.so");
         run_eh(linker, std::filesystem::u8path(argv[1]));
         run_unload(linker, "libwinapk_arm64_unload.so");
+        run_svc(linker, "libwinapk_arm64_svc.so");
 #if !WINAPK_HOST_ARM64  // code the engines translate or patch: nothing to do for native code
         run_patch(linker, e.first == winapk::arm64::Engine::kAot   ? "libwinapk_arm64_patch_aot.so"
                           : e.first == winapk::arm64::Engine::kJit ? "libwinapk_arm64_patch_jit.so"

@@ -15,6 +15,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <vector>
 
 namespace winapk::arm64 {
 
@@ -144,10 +145,54 @@ inline X18Scan scan_x18(const uint8_t* code, size_t len) {
     return r;
 }
 
-// The scan of an arm64 ELF file's code. An executable segment often starts at file offset 0 and holds
-// the headers, symbol tables and strings along with the code (lld without -z separate-code), and
-// those are not instructions; so the executable sections (SHF_EXECINSTR) are what is scanned when the
-// file has section headers, and the whole executable segments when it has not.
+// The code of an arm64 ELF file: its SHF_EXECINSTR sections, or its executable segments when it has no
+// section headers (lld's first segment also holds the headers and symbol tables).
+struct ExecRange {
+    uint64_t offset;  // in the file
+    uint64_t size;
+    uint64_t vaddr;   // where the loader maps it, before the load bias
+};
+
+struct ElfCode {
+    std::vector<ExecRange> ranges;
+    bool by_sections = false;
+    bool ok = false;  // false: not a readable arm64 ELF file
+};
+
+inline ElfCode elf_code(const uint8_t* file, size_t size) {
+    ElfCode r;
+    elf::Ehdr eh;
+    if (size < sizeof eh) return r;
+    std::memcpy(&eh, file, sizeof eh);
+    if (eh.e_ident[0] != elf::kMag0 || eh.e_ident[1] != elf::kMag1 || eh.e_ident[2] != elf::kMag2 ||
+        eh.e_ident[3] != elf::kMag3 || eh.e_machine != elf::kEmAarch64)
+        return r;
+    r.ok = true;
+    auto inside = [&](uint64_t off, uint64_t len) { return off <= size && len <= size - off; };
+    if (eh.e_shoff && eh.e_shnum && eh.e_shentsize >= sizeof(elf::Shdr) && eh.e_shoff <= size &&
+        static_cast<uint64_t>(eh.e_shnum) * eh.e_shentsize <= size - eh.e_shoff) {
+        for (unsigned i = 0; i < eh.e_shnum; ++i) {
+            elf::Shdr sh;
+            std::memcpy(&sh, file + eh.e_shoff + static_cast<size_t>(i) * eh.e_shentsize, sizeof sh);
+            if (sh.sh_type == elf::kShtProgbits && (sh.sh_flags & elf::kShfExecinstr) && inside(sh.sh_offset, sh.sh_size)) {
+                r.by_sections = true;
+                r.ranges.push_back({sh.sh_offset, sh.sh_size, sh.sh_addr});
+            }
+        }
+    }
+    if (!r.by_sections) {
+        for (unsigned i = 0; i < eh.e_phnum; ++i) {
+            elf::Phdr ph;
+            const uint64_t at = eh.e_phoff + static_cast<uint64_t>(i) * eh.e_phentsize;
+            if (!inside(at, sizeof ph)) break;
+            std::memcpy(&ph, file + at, sizeof ph);
+            if (ph.p_type == elf::kPtLoad && (ph.p_flags & elf::kPfX) && inside(ph.p_offset, ph.p_filesz))
+                r.ranges.push_back({ph.p_offset, ph.p_filesz, ph.p_vaddr});
+        }
+    }
+    return r;
+}
+
 // first_offset is a file offset. by_sections tells which of the two was done.
 struct ElfX18Scan {
     X18Scan scan;
@@ -157,42 +202,19 @@ struct ElfX18Scan {
 
 inline ElfX18Scan scan_elf_x18(const uint8_t* file, size_t size) {
     ElfX18Scan r;
-    elf::Ehdr eh;
-    if (size < sizeof eh) return r;
-    std::memcpy(&eh, file, sizeof eh);
-    if (eh.e_ident[0] != elf::kMag0 || eh.e_ident[1] != elf::kMag1 || eh.e_ident[2] != elf::kMag2 ||
-        eh.e_ident[3] != elf::kMag3 || eh.e_machine != elf::kEmAarch64)
-        return r;
-    r.ok = true;
-    auto add = [&](uint64_t off, uint64_t len) {
-        if (off > size || len > size - off) return;
-        X18Scan s = scan_x18(file + off, static_cast<size_t>(len));
-        if (s.found() && !r.scan.uses) r.scan.first_offset = static_cast<size_t>(off) + s.first_offset;
+    const ElfCode code = elf_code(file, size);
+    r.ok = code.ok;
+    r.by_sections = code.by_sections;
+    for (const ExecRange& e : code.ranges) {
+        X18Scan s = scan_x18(file + e.offset, static_cast<size_t>(e.size));
+        if (s.found() && !r.scan.uses) r.scan.first_offset = static_cast<size_t>(e.offset) + s.first_offset;
         r.scan.uses += s.uses;
-    };
-    bool sections = false;
-    if (eh.e_shoff && eh.e_shnum && eh.e_shentsize >= sizeof(elf::Shdr) && eh.e_shoff <= size &&
-        static_cast<uint64_t>(eh.e_shnum) * eh.e_shentsize <= size - eh.e_shoff) {
-        for (unsigned i = 0; i < eh.e_shnum; ++i) {
-            elf::Shdr sh;
-            std::memcpy(&sh, file + eh.e_shoff + static_cast<size_t>(i) * eh.e_shentsize, sizeof sh);
-            if (sh.sh_type == elf::kShtProgbits && (sh.sh_flags & elf::kShfExecinstr)) {
-                sections = true;
-                add(sh.sh_offset, sh.sh_size);
-            }
-        }
-    }
-    r.by_sections = sections;
-    if (!sections) {
-        for (unsigned i = 0; i < eh.e_phnum; ++i) {
-            elf::Phdr ph;
-            const uint64_t at = eh.e_phoff + static_cast<uint64_t>(i) * eh.e_phentsize;
-            if (at > size || size - at < sizeof ph) break;
-            std::memcpy(&ph, file + at, sizeof ph);
-            if (ph.p_type == elf::kPtLoad && (ph.p_flags & elf::kPfX)) add(ph.p_offset, ph.p_filesz);
-        }
     }
     return r;
 }
+
+// `svc #imm16`. Linux code makes system calls with `svc #0` (x8 the number, x0-x5 the arguments).
+inline bool is_svc(uint32_t i) { return (i & 0xffe0001f) == 0xd4000001; }
+inline uint32_t svc_imm(uint32_t i) { return (i >> 5) & 0xffff; }
 
 }  // namespace winapk::arm64

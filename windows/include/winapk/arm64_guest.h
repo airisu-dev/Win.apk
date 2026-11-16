@@ -74,6 +74,10 @@ void* host_callable(void* fn);
 #include "winapk/arch.h"
 #if WINAPK_HOST_ARM64
 void enter_thread();
+
+// Rewrites each `svc #0` in [code, code + len) to a trap answered as the Linux system call. Returns the
+// count; other `svc` immediates are counted in *unsupported.
+size_t patch_svc(uint8_t* code, size_t len, size_t* unsupported);
 #else
 inline void enter_thread() {}
 #endif

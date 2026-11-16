@@ -191,6 +191,18 @@ std::unique_ptr<ElfImage> ElfImage::map(const std::filesystem::path& path, std::
     if (!img->map_segments(file, error)) return nullptr;
 #if WINAPK_HOST_ARM64
     if (img->is_arm64() && !img->check_x18(file, error)) return nullptr;
+    if (img->is_arm64()) {
+        // Raw Linux system calls become traps the runtime answers (arm64_guest.h, patch_svc).
+        const arm64::ElfCode code = arm64::elf_code(file.data(), file.size());
+        size_t unsupported = 0;
+        for (const arm64::ExecRange& r : code.ranges) {
+            if (img->in_image(r.vaddr, r.size)) arm64::patch_svc(img->at<uint8_t>(r.vaddr), r.size, &unsupported);
+        }
+        if (unsupported) {
+            *error = "has " + std::to_string(unsupported) + " `svc` instruction(s) with a non-zero immediate: not a Linux system call";
+            return nullptr;
+        }
+    }
 #endif
     if (!img->read_dynamic(error)) return nullptr;
     if (img->has_tls_) {

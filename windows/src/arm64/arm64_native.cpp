@@ -15,9 +15,12 @@
 #include "winapk/abi_thunk.h"
 #include "winapk/arm64_aot.h"
 #include "winapk/arm64_guest.h"
+#include "winapk/arm64_x18.h"
 #include "winapk/elf_tls.h"
 
 #include <algorithm>
+#include <atomic>
+#include <cstdio>
 #include <cstring>
 #include <map>
 #include <mutex>
@@ -203,6 +206,58 @@ void* guest_intrinsic(const char* name) {
 }
 
 // abi_override and linux_syscall are in arm64_abi.cpp.
+
+// ---- raw system calls -----------------------------------------------------------------------
+//
+// A guest `svc #0` would be a Windows system call here, so the loader rewrites it to `brk #0x7357`.
+// Windows reports that as EXCEPTION_ILLEGAL_INSTRUCTION (any brk but 0xf000), and the handler answers
+// it with linux_syscall (arm64_abi.cpp). One exception per call.
+
+namespace {
+
+constexpr uint32_t kSvcTrap = 0xd4200000u | (0x7357u << 5);  // brk #0x7357
+
+LONG CALLBACK svc_handler(EXCEPTION_POINTERS* e) {
+    if (e->ExceptionRecord->ExceptionCode != EXCEPTION_ILLEGAL_INSTRUCTION) return EXCEPTION_CONTINUE_SEARCH;
+    CONTEXT* c = e->ContextRecord;
+    if (!is_guest_code(reinterpret_cast<const void*>(c->Pc))) return EXCEPTION_CONTINUE_SEARCH;
+    uint32_t insn;
+    std::memcpy(&insn, reinterpret_cast<const void*>(c->Pc), sizeof insn);
+    if (insn != kSvcTrap) return EXCEPTION_CONTINUE_SEARCH;
+    const uint64_t args[6] = {c->X0, c->X1, c->X2, c->X3, c->X4, c->X5};
+    uint64_t result = 0;
+    if (!linux_syscall(c->X8, args, &result)) {
+        static std::atomic<unsigned> told{0};
+        if (told.fetch_add(1) < 8) {
+            std::fprintf(stderr, "[win.apk] guest system call %llu is not supported: ENOSYS\n",
+                         static_cast<unsigned long long>(c->X8));
+        }
+        result = static_cast<uint64_t>(-38);  // -ENOSYS
+    }
+    c->X0 = result;
+    c->Pc += 4;
+    return EXCEPTION_CONTINUE_EXECUTION;
+}
+
+}  // namespace
+
+size_t patch_svc(uint8_t* code, size_t len, size_t* unsupported) {
+    static std::once_flag once;
+    std::call_once(once, [] { AddVectoredExceptionHandler(1, svc_handler); });
+    size_t patched = 0;
+    for (size_t at = 0; at + 4 <= len; at += 4) {
+        uint32_t w;
+        std::memcpy(&w, code + at, 4);
+        if (!is_svc(w)) continue;
+        if (svc_imm(w) == 0) {
+            std::memcpy(code + at, &kSvcTrap, 4);
+            ++patched;
+        } else if (unsupported) {
+            ++*unsupported;  // a Windows system call number, or anything else we would not want to run
+        }
+    }
+    return patched;
+}
 
 // ---- translations: none on this host --------------------------------------------------
 
