@@ -488,6 +488,12 @@ checked against its SHA-256.
 
 Each GL view renders into its own pbuffer; after a frame the pixels are read
 back and composited with the Java view tree, which is drawn in software.
+By default on a GPU (`host/gl/gl_present.h`; Settings > Apps > "Enable GPU
+rendering", an app's own "GPU rendering", `WINAPK_GL_PRESENT`) nothing is read
+back: the pbuffer's texture, a GL view's or one behind `eglSwapBuffers`,
+is copied on the GPU into a DirectComposition swap chain over the window; the
+view tree and each SurfaceView's lockCanvas frames are layers of their own,
+and the render tick runs at the display's refresh rate, after its vblank.
 Vulkan is not implemented.
 
 ### The view tree's frames

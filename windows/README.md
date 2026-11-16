@@ -223,7 +223,8 @@ The user-facing ones (`WINAPK_PHONE_SIZE`, `WINAPK_RESIZABLE`,
 | Variable | Effect |
 |---|---|
 | `WINAPK_HEADLESS=1` | No window; `WINAPK_HEADLESS_FRAME=<file.bmp>` saves the last frame and `WINAPK_HEADLESS_EXIT_AFTER_FRAMES=<n>` exits after that many presented frames (an idle app counts too) |
-| `WINAPK_FRAME_TIMING=1` | Every 5 s, a `[frame-timing]` line with a GL view's fps and each step's mean: `begin`, `draw`, `gpu` (a `glFinish` added only here), `read`, `compose`, `paint` |
+| `WINAPK_FRAME_TIMING=1` | Every 5 s, a `[frame-timing]` line with a GL view's fps and each step's mean: `begin`, `draw`, `gpu` (a `glFinish` added only here), `read`, `compose` (with `WINAPK_GL_PRESENT=gpu`: the GPU copy and present), `paint` |
+| `WINAPK_GL_PRESENT=readback`, `on` or `gpu` | The GPU present (`host/gl/gl_present.h`), on by default (Settings > Apps > "Enable GPU rendering", `GpuPresent`): GL frames (GL views and apps' own `eglSwapBuffers`), the view tree and SurfaceView frames go to the window as DirectComposition layers, with no readback, and the render tick follows the display's refresh rate and vblank. Direct3D 11 on a GPU only (WARP keeps the readback); not with `WINAPK_HEADLESS_FRAME`. `readback` turns it off whatever the setting, `on` turns it on (the launcher sets either from an app's own choice, `library\<name>.gpu`), `gpu` forces it on, WARP included |
 | `WINAPK_TEST_WORKAREA=<w>x<h>[+<x>+<y>]` | Stands in for the monitor's work area, in pixels; `@file` reads the value from a file at every fit |
 | `MACAPK_BROKER=1` or `0` | Overrides the "Use Google services" setting for this run (the system broker and the real Google apps); `MACAPK_BROKER_IDLE_GRACE_S`, `MACAPK_BROKER_IDLE_EXIT=0` tune the broker's idle exit |
 | `WINAPK_TEST_ANDROID_ROOT=<dir>` | `winapk-binder-test` only: the android root its JVM gets (the broker checks' scratch data folder) |

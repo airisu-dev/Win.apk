@@ -222,6 +222,11 @@ const wchar_t* tr(const wchar_t* en) {
         {L"Speed up ARM apps", L"האצת אפליקציות ARM"},
         {L"Translates ARM code to your PC's code in the background so apps run faster. Runs at low priority.",
          L"ממיר ברקע קוד ARM לקוד של המחשב, כדי שהאפליקציות ירוצו מהר יותר. פועל בעדיפות נמוכה."},
+        {L"Enable GPU rendering", L"הפעלת רינדור GPU"},
+        {L"Games, video and app screens go to the window through the graphics card, at your display's refresh "
+         L"rate. Turn it off if an app shows a black or frozen picture. Applies to apps opened next.",
+         L"משחקים, וידאו ומסכי אפליקציות מוצגים בחלון דרך הכרטיס הגרפי, בקצב הרענון של המסך. כדאי לכבות אם "
+         L"אפליקציה מציגה תמונה שחורה או קפואה. חל על אפליקציות שייפתחו מעכשיו."},
         {L"Performance", L"ביצועים"},
         {L"Optimizing for this PC…", L"מבצע אופטימיזציה למחשב הזה…"},
         {L"{0} of {1} parts", L"{0} מתוך {1} חלקים"},
@@ -332,6 +337,13 @@ const wchar_t* tr(const wchar_t* en) {
         {L"Portrait – required by the app", L"לאורך – לפי דרישת האפליקציה"},
         {L"Landscape – required by the app", L"לרוחב – לפי דרישת האפליקציה"},
         {L"Settings' default", L"ברירת המחדל שבהגדרות"},
+        {L"GPU rendering", L"רינדור GPU"},
+        {L"The settings' default is on. Applies the next time the app opens.",
+         L"ברירת המחדל שבהגדרות היא מופעל. חל בפעם הבאה שהאפליקציה תיפתח."},
+        {L"The settings' default is off. Applies the next time the app opens.",
+         L"ברירת המחדל שבהגדרות היא כבוי. חל בפעם הבאה שהאפליקציה תיפתח."},
+        {L"On", L"מופעל"},
+        {L"Off", L"כבוי"},
         {L"The settings' default is landscape.", L"ברירת המחדל שבהגדרות היא לרוחב."},
         {L"The settings' default is portrait.", L"ברירת המחדל שבהגדרות היא לאורך."},
         {L"{0} opens in landscape from now on.", L"{0} תיפתח לרוחב מעתה."},
@@ -872,11 +884,45 @@ void runtime_phone_size(const std::wstring& name, int* pw, int* ph) {
     *ph = h;
 }
 
+// The user's "GPU rendering" choice for one app,
+// library\<name>.gpu ("on" or "off"); without one the settings' (GpuPresent)
+// decides, which the runtime reads itself.
+fs::path gpu_file(const std::wstring& name) { return library_dir() / (name + L".gpu"); }
+
+int app_gpu(const std::wstring& name) {
+    std::ifstream f(gpu_file(name));
+    std::string s;
+    f >> s;
+    return s == "on" ? 1 : s == "off" ? 0 : -1;
+}
+
+void set_app_gpu(const std::wstring& name, int on) {
+    std::error_code ec;
+    if (on < 0) {
+        fs::remove(gpu_file(name), ec);
+        return;
+    }
+    std::ofstream f(gpu_file(name), std::ios::trunc);
+    f << (on ? "on" : "off") << "\n";
+}
+
 // For the runtime started from here: it inherits this process's environment.
 void apply_runtime_env(const std::wstring& name) {
     int w = 360, h = 800;
     runtime_phone_size(name, &w, &h);
     SetEnvironmentVariableW(L"WINAPK_PHONE_SIZE", (std::to_wstring(w) + L"x" + std::to_wstring(h)).c_str());
+    // The app's own graphics-card choice (host/gl/gl_present.cpp); without one,
+    // whatever this process started with, so one app's choice never carries over.
+    static const std::wstring own = [] {
+        wchar_t v[32] = {};
+        const DWORD n = GetEnvironmentVariableW(L"WINAPK_GL_PRESENT", v, 32);
+        return n > 0 && n < 32 ? std::wstring(v) : std::wstring();
+    }();
+    const int gpu = name.empty() ? -1 : app_gpu(name);
+    SetEnvironmentVariableW(L"WINAPK_GL_PRESENT", gpu == 0   ? L"readback"
+                                                  : gpu == 1 ? L"on"
+                                                  : own.empty() ? nullptr
+                                                                : own.c_str());
 }
 
 // ---------------------------------------------------------------------------
@@ -4591,6 +4637,7 @@ void remove_app_files(const std::wstring& name) {
     fs::remove(shortcut_icon(name), ec);
     fs::remove(library_dir() / (name + L".window"), ec);
     fs::remove(orientation_file(name), ec);
+    fs::remove(gpu_file(name), ec);
     remove_tree(app_dir(name));
     fs::remove(data_dir() / L"android" / L"data" / L"app" / (L"." + name + L".installed"), ec);
 }
@@ -6318,6 +6365,15 @@ std::vector<Section> settings_sections() {
                     L"priority.");
     aot.on = setting(L"AotBackground", 1) != 0;
     aot.act = [](int on) { set_setting(L"AotBackground", static_cast<DWORD>(on)); };
+    // Read by the runtime when an app opens (host/gl/gl_present.cpp, gl_present_wanted).
+    Row gpu;
+    gpu.kind = Row::kToggle;
+    gpu.title = tr(L"Enable GPU rendering");
+    gpu.detail = tr(L"Games, video and app screens go to the window through the graphics card, at your display's "
+                    L"refresh rate. Turn it off if an app shows a black or frozen picture. Applies to apps opened "
+                    L"next.");
+    gpu.on = setting(L"GpuPresent", 1) != 0;
+    gpu.act = [](int on) { set_setting(L"GpuPresent", static_cast<DWORD>(on)); };
     Row desktop;
     desktop.kind = Row::kToggle;
     desktop.title = tr(L"Desktop shortcut for new apps");
@@ -6333,7 +6389,7 @@ std::vector<Section> settings_sections() {
                            [] { register_file_types(true); });
     }
     // Nothing is translated on ARM64.
-    std::vector<Row> apps_rows = {size, orient, folders, aot, desktop, types};
+    std::vector<Row> apps_rows = {size, orient, folders, aot, gpu, desktop, types};
     if (WINAPK_HOST_ARM64) apps_rows.erase(apps_rows.begin() + 3);
     out.push_back({tr(L"Apps"), std::move(apps_rows), L""});
 
@@ -6520,6 +6576,18 @@ void show_info(const App& app) {
                                             }));
             }
         }
+        // Read when the app opens (apply_runtime_env).
+        Row gpu;
+        gpu.kind = Row::kChoice;
+        gpu.title = tr(L"GPU rendering");
+        gpu.detail = tr(setting(L"GpuPresent", 1) != 0 ? L"The settings' default is on. Applies the next time the "
+                                                         L"app opens."
+                                                       : L"The settings' default is off. Applies the next time the "
+                                                         L"app opens.");
+        gpu.choices = {tr(L"Settings' default"), tr(L"On"), tr(L"Off")};
+        gpu.choice = app_gpu(a.name) < 0 ? 0 : app_gpu(a.name) == 1 ? 1 : 2;
+        gpu.act = [a](int i) { set_app_gpu(a.name, i == 0 ? -1 : i == 1 ? 1 : 0); };
+        window.push_back(gpu);
         out.push_back({tr(L"Window"), std::move(window), L""});
         if (std::vector<Row> perms = permission_rows(a); !perms.empty())
             out.push_back({tr(L"Permissions"), std::move(perms), L""});
