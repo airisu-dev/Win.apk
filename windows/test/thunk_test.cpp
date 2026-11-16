@@ -8,6 +8,7 @@
 // top of it.
 
 #include "winapk/abi_thunk.h"
+#include "aapcs_call.h"
 #include "winapk/guest_abi.h"
 
 #include <cstdint>
@@ -101,8 +102,18 @@ void test_variadic_entry() {
     auto fn = reinterpret_cast<VariadicFn>(
         make_sysv_variadic_entry(3, reinterpret_cast<void*>(&sum_handler)));
     if (!fn) { check("variadic entry allocated", false, 0, 1); return; }
+#if WINAPK_HOST_X64
     long long r = fn(reinterpret_cast<void*>(0xE), reinterpret_cast<void*>(0xB),
                      reinterpret_cast<void*>(0x10), 10, 20, 30, 40, 1.5, 2.5, 99);
+#else
+    // x0-x2 named, then 10 20 30 40 in x3-x6, 99 in x7, the doubles in v0 and v1
+    const uint64_t x[8] = {0xE, 0xB, 0x10, 10, 20, 30, 40, 99};
+    const double d[8] = {1.5, 2.5, 0, 0, 0, 0, 0, 0};
+    uint64_t xr;
+    double dr;
+    aapcs_call(reinterpret_cast<void*>(fn), x, d, &xr, &dr);
+    long long r = static_cast<long long>(xr);
+#endif
     // 10+20+30+40 = 100, +4 (1.5+2.5), +99 = 203
     check("variadic entry: gp/fp va_list decode", r == 203, r, 203);
 }

@@ -527,7 +527,7 @@ void run_patch(winapk::GuestLinker& linker, const char* file) {
     void* fn = sym(linker, lib, "flow_patch");
     void* target = sym(linker, lib, "flow_patch_target");
     if (!fn || !target) return;
-    const bool aot = winapk::arm64::engine() == winapk::arm64::Engine::kAot;
+    const bool aot = !WINAPK_HOST_ARM64 && winapk::arm64::engine() == winapk::arm64::Engine::kAot;
     if (aot) {
         check("its translation is loaded", winapk::arm64::aot_lookup(reinterpret_cast<uint64_t>(target)) != nullptr);
     }
@@ -556,7 +556,7 @@ void run_unload(winapk::GuestLinker& linker, const char* file) {
     const uint64_t in[3] = {1, 2, 3};
     check("runs", winapk::arm64::call(fn, in, 3) == isa_arith(1, 2, 3));
     const bool translated = winapk::arm64::aot_lookup(reinterpret_cast<uint64_t>(fn)) != nullptr;
-    if (winapk::arm64::engine() == winapk::arm64::Engine::kAot) check("its translation is loaded", translated);
+    if (!WINAPK_HOST_ARM64 && winapk::arm64::engine() == winapk::arm64::Engine::kAot) check("its translation is loaded", translated);
     check("dlclose", linker.close(lib, &error) == 0, error);
     check("dlclose drops the translation", winapk::arm64::aot_lookup(reinterpret_cast<uint64_t>(fn)) == nullptr);
 }
@@ -890,6 +890,7 @@ void run_speed(winapk::GuestLinker& linker,
 }  // namespace
 
 int main(int argc, char** argv) {
+    std::setvbuf(stdout, nullptr, _IONBF, 0);  // a crash must not take the lines before it along
     if (argc < 2) {
         std::fprintf(stderr, "usage: winapk-arm64-test <dir with libwinapk_arm64_*.so>\n");
         return 2;
@@ -907,6 +908,10 @@ int main(int argc, char** argv) {
     // Every check on each engine the build has: the interpreter, the JIT
     // (dynarmic) when it is built in, and the code translated ahead of time
     // (the <lib>.so.aot.dll files next to the libraries, when present).
+#if WINAPK_HOST_ARM64
+    // One "engine" on an arm64 host: native, compared with the same C built for the host (run_isa).
+    std::vector<std::pair<winapk::arm64::Engine, const char*>> engines = {{winapk::arm64::Engine::kAot, "native"}};
+#else
     std::vector<std::pair<winapk::arm64::Engine, const char*>> engines = {
         {winapk::arm64::Engine::kInterpreter, "interpreter"}};
     if (winapk::arm64::set_engine(winapk::arm64::Engine::kJit)) {
@@ -915,6 +920,7 @@ int main(int argc, char** argv) {
         std::printf("(this build has no JIT: -DWINAPK_ARM64_JIT=ON adds it)\n");
     }
     engines.push_back({winapk::arm64::Engine::kAot, "AOT"});
+#endif
     for (const auto& e : engines) {
         winapk::arm64::set_engine(e.first);
         std::printf("\n==== Win.apk arm64, %s ====\n", e.second);
@@ -926,15 +932,19 @@ int main(int argc, char** argv) {
         run_tls(linker, "libwinapk_arm64_tls.so");
         run_eh(linker, std::filesystem::u8path(argv[1]));
         run_unload(linker, "libwinapk_arm64_unload.so");
+#if !WINAPK_HOST_ARM64  // code the engines translate or patch: nothing to do for native code
         run_patch(linker, e.first == winapk::arm64::Engine::kAot   ? "libwinapk_arm64_patch_aot.so"
                           : e.first == winapk::arm64::Engine::kJit ? "libwinapk_arm64_patch_jit.so"
                                                                    : "libwinapk_arm64_patch_interp.so");
+#endif
     }
+#if !WINAPK_HOST_ARM64
     winapk::arm64::set_engine(winapk::arm64::Engine::kAot);
     run_rebased(linker, std::filesystem::u8path(argv[1]));
     run_sealed(linker, std::filesystem::u8path(argv[1]));
     run_fuzz(linker, engines);
     run_speed(linker, engines);
+#endif
 
     std::printf("\n%s: %d failure(s)\n", g_failures ? "FAILED" : "OK", g_failures);
     return g_failures;

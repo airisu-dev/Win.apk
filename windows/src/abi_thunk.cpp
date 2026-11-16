@@ -300,24 +300,16 @@ double sysv_va_next_fp(SysVVaList* va) {
     return v;
 }
 
-}  // namespace winapk
-
-#else  // WINAPK_HOST_ARM64
-
-// The thunks above emit x86-64 machine code (and read a System V va_list).
-// On an arm64 host the guest and the host share one calling convention for
-// fixed arguments, so a JNI native needs only its JNIEnv* replaced, and a
-// variadic entry needs an AAPCS64 va_list decoder. Neither is written yet:
-// they fail, and their callers report it.
-namespace winapk {
-
-void* make_jni_native_thunk(void*, const ArgKind*, size_t, void*, size_t) { return nullptr; }
-void* make_sysv_variadic_entry(int, void*) { return nullptr; }
-void* make_tagged_zero_stub(void*, const void*) { return nullptr; }
-void* make_r10_jump(void*, uint64_t) { return nullptr; }
-uint64_t sysv_va_next_gp(SysVVaList*) { return 0; }
-double sysv_va_next_fp(SysVVaList*) { return 0; }
+long double guest_va_next_long_double(SysVVaList* va) {
+    // Always memory-class, 16-byte aligned on the stack.
+    uintptr_t p = reinterpret_cast<uintptr_t>(va->overflow_arg_area);
+    p = (p + 15) & ~uintptr_t{15};
+    long double v;
+    std::memcpy(&v, reinterpret_cast<void*>(p), 10);
+    va->overflow_arg_area = reinterpret_cast<uint8_t*>(p + 16);
+    return v;
+}
 
 }  // namespace winapk
 
-#endif
+#endif  // WINAPK_HOST_X64

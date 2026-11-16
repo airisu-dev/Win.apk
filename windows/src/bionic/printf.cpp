@@ -49,16 +49,6 @@ struct Sink {
     }
 };
 
-// A long double argument: always memory-class, 16-byte aligned on the stack.
-long double next_long_double(SysVVaList* va) {
-    uintptr_t p = reinterpret_cast<uintptr_t>(va->overflow_arg_area);
-    p = (p + 15) & ~uintptr_t{15};
-    long double v;
-    std::memcpy(&v, reinterpret_cast<void*>(p), 10);
-    va->overflow_arg_area = reinterpret_cast<uint8_t*>(p + 16);
-    return v;
-}
-
 void put_utf8(std::string* out, uint32_t c) {
     if (c < 0x80) {
         out->push_back(static_cast<char>(c));
@@ -214,7 +204,7 @@ int format(Sink& out, const char* fmt, SysVVaList* va) {
             }
             case 'f': case 'F': case 'e': case 'E': case 'g': case 'G': case 'a': case 'A': {
                 // The UCRT has no 80-bit long double; it is formatted as a double.
-                const double v = len == 4 ? static_cast<double>(next_long_double(va)) : sysv_va_next_fp(va);
+                const double v = len == 4 ? static_cast<double>(guest_va_next_long_double(va)) : sysv_va_next_fp(va);
                 emit(out, head + conv, v);
                 break;
             }

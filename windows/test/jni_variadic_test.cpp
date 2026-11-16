@@ -10,6 +10,8 @@
 #include "winapk/guest_abi.h"
 #include "winapk/guest_jni.h"
 
+#include "aapcs_call.h"
+
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
@@ -134,8 +136,18 @@ int main() {
     {
         auto fn = reinterpret_cast<jint(WINAPK_GUEST_ABI*)(JNIEnv*, jobject, jmethodID, ...)>(
             reinterpret_cast<void*>(slot(genv, &JNINativeInterface_::CallIntMethod)));
+#if WINAPK_HOST_X64
         jint r = fn(genv, reinterpret_cast<jobject>(0x11), MID_IFJDI, (jint)1, (jfloat)2.5f,
                     (jlong)100, (jdouble)4.5, (jint)9);
+#else
+        // named: env, obj, mid; then I -> x3, F (promoted to double) -> v0, J -> x4, D -> v1, I -> x5
+        const uint64_t x[8] = {reinterpret_cast<uint64_t>(genv), 0x11, reinterpret_cast<uint64_t>(MID_IFJDI), 1, 100, 9, 0, 0};
+        const double d[8] = {2.5, 4.5, 0, 0, 0, 0, 0, 0};
+        uint64_t xr;
+        double dr;
+        aapcs_call(reinterpret_cast<void*>(fn), x, d, &xr, &dr);
+        jint r = static_cast<jint>(xr);
+#endif
         bool args_ok = g_seen.nargs == 5 && g_seen.argv[0].i == 1 && g_seen.argv[1].f == 2.5f &&
                        g_seen.argv[2].j == 100 && g_seen.argv[3].d == 4.5 && g_seen.argv[4].i == 9;
         check("CallIntMethod (...) repacks I,F,J,D,I and dispatches to CallIntMethodA",
@@ -146,7 +158,15 @@ int main() {
     {
         auto fn = reinterpret_cast<jdouble(WINAPK_GUEST_ABI*)(JNIEnv*, jclass, jmethodID, ...)>(
             reinterpret_cast<void*>(slot(genv, &JNINativeInterface_::CallStaticDoubleMethod)));
+#if WINAPK_HOST_X64
         jdouble r = fn(genv, reinterpret_cast<jclass>(0x22), MID_DD, (jdouble)1.25, (jdouble)8.75);
+#else
+        const uint64_t x[8] = {reinterpret_cast<uint64_t>(genv), 0x22, reinterpret_cast<uint64_t>(MID_DD), 0, 0, 0, 0, 0};
+        const double d[8] = {1.25, 8.75, 0, 0, 0, 0, 0, 0};
+        uint64_t xr;
+        double r;
+        aapcs_call(reinterpret_cast<void*>(fn), x, d, &xr, &r);
+#endif
         check("CallStaticDoubleMethod (...) repacks D,D (FP class)",
               r == 10.0 && g_seen.argv[0].d == 1.25 && g_seen.argv[1].d == 8.75 &&
                   std::strcmp(g_seen.slot, "CallStaticDoubleMethodA") == 0,
@@ -178,11 +198,22 @@ int main() {
     {
         uint8_t reg_save[48 + 128] = {0};
         winapk::SysVVaList va{};
+#if WINAPK_HOST_X64
         va.gp_offset = 0;
         va.fp_offset = 48;
         va.reg_save_area = reg_save;
         va.overflow_arg_area = reg_save;  // unused: the single arg is in a register slot
         *reinterpret_cast<uint64_t*>(reg_save) = 0x1234;  // first integer vararg
+#else
+        // AAPCS64's: the saved x0-x7 end at gr_top, and the next integer slot is gr_offs below it.
+        uint8_t gr[64] = {0}, vr[128] = {0};
+        va.stack = reg_save;  // unused: the single arg is in a register slot
+        va.gr_top = gr + sizeof gr;
+        va.vr_top = vr + sizeof vr;
+        va.gr_offs = -64;
+        va.vr_offs = -128;
+        *reinterpret_cast<uint64_t*>(gr) = 0x1234;  // first integer vararg
+#endif
         auto fn = reinterpret_cast<jobject(WINAPK_GUEST_ABI*)(JNIEnv*, jobject, jmethodID,
                                                              winapk::SysVVaList*)>(
             reinterpret_cast<void*>(slot(genv, &JNINativeInterface_::CallObjectMethodV)));

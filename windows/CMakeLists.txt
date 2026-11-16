@@ -30,8 +30,10 @@ endif()
 if(CMAKE_SYSTEM_PROCESSOR MATCHES "ARM64|arm64|aarch64")
   set(WINAPK_HOST_ARM64 ON)
   set(WINAPK_ARM64_SOURCES src/arm64/arm64_native.cpp)
+  set(WINAPK_ABI_THUNK_ARM64 src/abi_thunk_arm64.cpp)
 else()
   set(WINAPK_HOST_ARM64 OFF)
+  set(WINAPK_ABI_THUNK_ARM64 "")
   set(WINAPK_ARM64_SOURCES
     src/arm64/arm64_cpu.cpp
     src/arm64/arm64_simd.cpp
@@ -60,6 +62,7 @@ add_library(winapk_loader STATIC
   src/bionic/zlib.cpp
   src/bionic/setjmp.cpp
   src/abi_thunk.cpp
+  ${WINAPK_ABI_THUNK_ARM64}
   src/linker.cpp
   ${WINAPK_ARM64_SOURCES}
   src/arm64/aot_files.cpp
@@ -124,10 +127,8 @@ endif()
 add_executable(winapk-elfrun tools/elfrun_main.cpp)
 target_link_libraries(winapk-elfrun PRIVATE winapk_loader)
 
-if(NOT WINAPK_HOST_ARM64)
-  add_executable(winapk-thunk-test test/thunk_test.cpp)
-  target_link_libraries(winapk-thunk-test PRIVATE winapk_loader)
-endif()
+add_executable(winapk-thunk-test test/thunk_test.cpp)
+target_link_libraries(winapk-thunk-test PRIVATE winapk_loader)
 
 add_executable(winapk-linker-test test/linker_test.cpp)
 target_link_libraries(winapk-linker-test PRIVATE winapk_loader)
@@ -148,14 +149,12 @@ add_executable(winapk-crash-test test/crash_report_test.cpp host/crash_report.cp
 target_include_directories(winapk-crash-test PRIVATE host)
 target_link_libraries(winapk-crash-test PRIVATE winapk_loader)
 
-if(NOT WINAPK_HOST_ARM64)
 # The arm64 interpreter and bridge: test/arm64_test.cpp runs
 # test/guest/arm64_isa.c both as arm64 guest code and natively and compares.
 add_executable(winapk-arm64-test test/arm64_test.cpp)
 target_link_libraries(winapk-arm64-test PRIVATE winapk_loader)
 target_include_directories(winapk-arm64-test PRIVATE test/guest)
 target_compile_options(winapk-arm64-test PRIVATE ${WINAPK_CX16})
-endif()
 
 # The translation's files under racing and killed processes
 # (include/winapk/aot_files.h), test/aot_cache_test.cpp. The DLL is its
@@ -210,15 +209,11 @@ endif()
 if(MINGW)
   # One self-contained .exe: no libstdc++/libgcc/winpthread DLLs next to it.
   target_link_options(winapk-elfrun PRIVATE -static)
-  if(TARGET winapk-thunk-test)
-    target_link_options(winapk-thunk-test PRIVATE -static)
-  endif()
+  target_link_options(winapk-thunk-test PRIVATE -static)
   target_link_options(winapk-linker-test PRIVATE -static)
   target_link_options(winapk-bionic-test PRIVATE -static)
   target_link_options(winapk-crash-test PRIVATE -static -municode)
-  if(TARGET winapk-arm64-test)
-    target_link_options(winapk-arm64-test PRIVATE -static)
-  endif()
+  target_link_options(winapk-arm64-test PRIVATE -static)
   target_link_options(winapk-aot-cache-test PRIVATE -static -municode)
   target_link_options(winapk-aot-test-dll PRIVATE -static)
   target_link_options(winapk-aot-guard-test PRIVATE -static -municode)

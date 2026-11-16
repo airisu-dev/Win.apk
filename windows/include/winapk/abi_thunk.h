@@ -20,6 +20,8 @@
 
 #pragma once
 
+#include "winapk/arch.h"
+
 #include <cstddef>
 #include <cstdint>
 
@@ -59,11 +61,18 @@ void* make_sysv_variadic_entry(int named, void* handler);
 // first call can be reported by name instead of failing as UnsatisfiedLinkError.
 void* make_tagged_zero_stub(void* handler, const void* tag);
 
+#if WINAPK_HOST_ARM64
+// arm64 host: jumps to `target`, first calling `enter()` (preserving the argument registers) when this
+// thread's TPIDR_EL0 is still 0 (arm64_guest.h, enter_thread).
+void* make_arm64_entry_thunk(void* target, void* enter);
+#endif
+
 // Code that sets r10 to `r10` and jumps to `target`, leaving every argument
 // register and the stack as its caller left them. The arm64 bridge uses it to
 // give a guest function a host-callable entry point (arm64_guest.h).
 void* make_r10_jump(void* target, uint64_t r10);
 
+#if WINAPK_HOST_X64
 // The x86-64 psABI va_list (one element of the __va_list_tag array).
 struct SysVVaList {
     uint32_t gp_offset;        // next GP register slot in reg_save_area (< 48)
@@ -71,8 +80,21 @@ struct SysVVaList {
     uint8_t* overflow_arg_area;  // next stack-passed argument
     uint8_t* reg_save_area;    // rdi rsi rdx rcx r8 r9, then xmm0..xmm7 (16 bytes each)
 };
+#else
+// arm64 host: AAPCS64's va_list, under the same name so the readers are shared.
+struct SysVVaList {
+    uint8_t* stack;    // next stack-passed argument
+    uint8_t* gr_top;   // end of the saved x0-x7 area
+    uint8_t* vr_top;   // end of the saved q0-q7 area
+    int32_t gr_offs;   // offset from gr_top of the next general register; >= 0 once all are used
+    int32_t vr_offs;   // offset from vr_top of the next FP/SIMD register; >= 0 once all are used
+};
+#endif
 
 uint64_t sysv_va_next_gp(SysVVaList* va);
 double sysv_va_next_fp(SysVVaList* va);
+
+// The next long double argument, converted to the host's (x87 on x64; binary128 rounded to double on arm64).
+long double guest_va_next_long_double(SysVVaList* va);
 
 }  // namespace winapk
