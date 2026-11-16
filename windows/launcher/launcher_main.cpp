@@ -97,6 +97,7 @@
 #include "updates.h"
 #include "../host/window_fit.h"
 #include "../include/winapk/aot_stamp.h"
+#include "../include/winapk/arch.h"
 
 namespace fs = std::filesystem;
 
@@ -236,6 +237,7 @@ const wchar_t* tr(const wchar_t* en) {
         {L"Google Play Store", L"חנות Google Play"},
         {L"Pick the newest version for Android 10 or later.", L"יש לבחור בגרסה החדשה ביותר ל-Android 10 ומעלה."},
         {L"Pick the x86_64 variant, nodpi, for Android 10 or later.", L"יש לבחור בגרסת x86_64,\x200F nodpi, ל-Android 10 ומעלה."},
+        {L"Pick the arm64-v8a variant, nodpi, for Android 10 or later.", L"יש לבחור בגרסת arm64-v8a,\x200F nodpi, ל-Android 10 ומעלה."},
         {L"Pick the nodpi variant, for Android 10 or later.", L"יש לבחור בגרסת nodpi, ל-Android 10 ומעלה."},
         {L"The file could not be checked", L"לא ניתן היה לבדוק את הקובץ"},
         {L"Win.apk's runtime did not start.", L"סביבת ההרצה של Win.apk לא הופעלה."},
@@ -248,6 +250,7 @@ const wchar_t* tr(const wchar_t* en) {
         {L"Checking {0}…", L"בודק את {0}…"},
         {L"To use Google Play, install the following apps as described.", L"כדי להפעיל את חנות Google Play, יש להתקין את האפליקציות הבאות לפי ההנחיות."},
         {L"{0} has code only for ARM processors. On APKMirror, download its x86_64 variant.", L"ב-{0} יש קוד למעבדי ARM בלבד. יש להוריד מ-APKMirror את גרסת x86_64 שלו."},
+        {L"{0} has no code for ARM64 processors. On APKMirror, download its arm64-v8a variant.", L"ב-{0} אין קוד למעבדי ARM64. יש להוריד מ-APKMirror את גרסת arm64-v8a שלו."},
         {L"{0} needs API level {1}, and Win.apk presents API level {2}. On APKMirror, download an older version of it.", L"{0} דורש רמת API ‏{1}, ו-Win.apk מציגה רמת API ‏{2}. יש להוריד מ-APKMirror גרסה ישנה יותר שלו."},
         {L"It's part of Google services.", L"היא חלק משירותי Google."},
         {L"Starting Google Play…", L"מפעיל את Google Play…"},
@@ -1883,7 +1886,8 @@ struct Json {
 struct IndexApk {
     std::string file, sha256, version;
     long long code = 0, size = 0;
-    bool arm_only = false;  // native code for arm64 and not x86_64: it runs, translated, but an x86_64 build is better
+    // x64 PC only: arm64 code without x86_64, which runs translated.
+    bool second_choice = false;
 };
 
 // The fields of index-v1.json's app entry the store keeps; the names and
@@ -1941,8 +1945,7 @@ void read_index_app(Json& j, IndexApp* a) {
     else if (!any_icon.empty()) a->icon = wide_to_utf8(kRepo) + a->pkg + "/" + any_icon_lang + "/" + any_icon;
 }
 
-// An APK entry; false when it cannot run here: native code for neither
-// x86_64 nor arm64-v8a (Win.apk translates arm64), or no SHA-256 to check.
+// An APK entry; false when it cannot run here (x64: x86_64 or arm64-v8a code; ARM64: arm64-v8a) or has no SHA-256.
 bool read_index_apk(Json& j, IndexApk* apk) {
     std::string hash_type, code, size;
     std::vector<std::string> abis;
@@ -1960,8 +1963,9 @@ bool read_index_apk(Json& j, IndexApk* apk) {
     apk->size = std::atoll(size.c_str());
     const bool x64 = std::find(abis.begin(), abis.end(), "x86_64") != abis.end();
     const bool arm64 = std::find(abis.begin(), abis.end(), "arm64-v8a") != abis.end();
-    apk->arm_only = arm64 && !x64;
-    return (abis.empty() || x64 || arm64) && hash_type == "sha256" && apk->sha256.size() == 64 && !apk->file.empty();
+    apk->second_choice = WINAPK_HOST_X64 && arm64 && !x64;
+    const bool runs = abis.empty() || arm64 || (WINAPK_HOST_X64 && x64);
+    return runs && hash_type == "sha256" && apk->sha256.size() == 64 && !apk->file.empty();
 }
 
 std::string tsv_field(std::string s) {
@@ -1971,10 +1975,13 @@ std::string tsv_field(std::string s) {
     return s;
 }
 
+// Per architecture, so a catalog the other build wrote is fetched again.
+constexpr const char* kCatalogHeader = WINAPK_HOST_ARM64 ? "winapk-catalog 1 arm64" : "winapk-catalog 1";
+
 // Turns index-v1.json into catalog.tsv: a line per app that can run here,
 // with the APK the store installs. That is F-Droid's suggested version (the
 // newest, unless it marks a newer one as not ready) and, where an app is
-// built per ABI, its x86_64 build. Returns the number of apps.
+// built per ABI, the build for this PC. Returns the number of apps.
 size_t convert_index(const fs::path& json_file, const fs::path& out) {
     std::string json;
     {
@@ -2003,7 +2010,7 @@ size_t convert_index(const fs::path& json_file, const fs::path& out) {
         }
     });
     if (!j.ok) return 0;
-    std::string text = "winapk-catalog 1\n";
+    std::string text = std::string(kCatalogHeader) + "\n";
     size_t count = 0;
     for (const IndexApp& a : apps) {
         const auto it = apks.find(a.pkg);
@@ -2016,9 +2023,9 @@ size_t convert_index(const fs::path& json_file, const fs::path& out) {
                 if (!best || apk.code > best->code) best = &apk;
             }
         }
-        if (best->arm_only) {
+        if (best->second_choice) {
             for (const IndexApk& apk : it->second) {
-                if (!apk.arm_only && apk.version == best->version) best = &apk;
+                if (!apk.second_choice && apk.version == best->version) best = &apk;
             }
         }
         std::string cats;
@@ -2043,7 +2050,7 @@ std::vector<StoreApp> read_catalog() {
     std::vector<StoreApp> out;
     std::ifstream f(catalog_file(), std::ios::binary);
     std::string line;
-    if (!std::getline(f, line) || line != "winapk-catalog 1") return out;
+    if (!std::getline(f, line) || line != kCatalogHeader) return out;
     while (std::getline(f, line)) {
         std::vector<std::string> v;
         for (size_t from = 0;;) {
@@ -2225,7 +2232,27 @@ DWORD WINAPI download_thread(void* param) {
 
 constexpr wchar_t kReleasesUrl[] = L"https://api.github.com/repos/israel2176/win.apk/releases?per_page=20";
 constexpr wchar_t kReleasesPage[] = L"https://github.com/israel2176/win.apk/releases";
-constexpr wchar_t kSetupAsset[] = L"Win.apk-Setup.exe";
+constexpr wchar_t kSetupAsset[] = L"Win.apk-Setup.exe";             // x64
+constexpr wchar_t kSetupAssetArm64[] = L"Win.apk-Setup-arm64.exe";  // ARM64 (winapk.iss, Arch=arm64)
+
+// Whether the machine is ARM64, also when an emulated x64 build asks.
+bool machine_is_arm64() {
+    if (WINAPK_HOST_ARM64) return true;
+    USHORT process = 0, native = 0;
+    using IsWow64Process2Fn = BOOL(WINAPI*)(HANDLE, USHORT*, USHORT*);
+    auto wow = reinterpret_cast<IsWow64Process2Fn>(
+        reinterpret_cast<void*>(GetProcAddress(GetModuleHandleW(L"kernel32.dll"), "IsWow64Process2")));
+    constexpr USHORT kArm64 = 0xAA64;  // IMAGE_FILE_MACHINE_ARM64
+    return wow && wow(GetCurrentProcess(), &process, &native) && native == kArm64;
+}
+
+// A release asset's fit for this PC, 0 for none: on an ARM64 PC the arm64 installer (also for an emulated x64
+// copy; both have one AppId), else the x64 one, which an ARM64 build never takes.
+int setup_asset_rank(const std::wstring& name) {
+    if (name == kSetupAssetArm64) return machine_is_arm64() ? 2 : 0;
+    if (name == kSetupAsset) return WINAPK_HOST_X64 ? 1 : 0;
+    return 0;
+}
 constexpr DWORD kUpdateInterval = 24 * 3600;  // seconds between automatic checks
 
 fs::path updates_dir() { return data_dir() / L"updates"; }
@@ -2354,6 +2381,7 @@ bool newest_release(const std::string& json, Release* best, bool* found_out) {
     j.array([&] {
         Release r;
         bool draft = false;
+        int asset_rank = 0;  // setup_asset_rank of the installer taken so far
         j.object([&](const std::string& key) {
             std::string v;
             if (key == "draft") {
@@ -2381,7 +2409,9 @@ bool newest_release(const std::string& json, Release* best, bool* found_out) {
                         else if (k == "digest") text(&digest);
                         else j.skip();
                     });
-                    if (utf8_to_wide(name) == kSetupAsset && !url.empty()) {
+                    const int rank = setup_asset_rank(utf8_to_wide(name));
+                    if (rank > asset_rank && !url.empty()) {
+                        asset_rank = rank;
                         r.url = utf8_to_wide(url);
                         r.size = std::strtoull(size.c_str(), nullptr, 10);
                         r.digest = digest;
@@ -4275,14 +4305,9 @@ std::wstring windows_version() {
         out += L" " + std::wstring(display);
     }
     out += L" (build " + std::to_wstring(v.dwBuildNumber) + L")";
-    // The machine itself, not the x64 that Windows on Arm emulates for us.
-    USHORT process = 0, native = 0;
-    using IsWow64Process2Fn = BOOL(WINAPI*)(HANDLE, USHORT*, USHORT*);
-    auto wow = reinterpret_cast<IsWow64Process2Fn>(
-        reinterpret_cast<void*>(GetProcAddress(GetModuleHandleW(L"kernel32.dll"), "IsWow64Process2")));
-    constexpr USHORT kArm64 = 0xAA64;  // IMAGE_FILE_MACHINE_ARM64
-    const bool arm = wow && wow(GetCurrentProcess(), &process, &native) && native == kArm64;
-    return out + (arm ? L", Arm64" : L", x64");
+    // The machine, not the x64 that Windows on Arm emulates; and whether this build is emulated.
+    const bool arm = machine_is_arm64();
+    return out + (arm ? L", Arm64" : L", x64") + (arm && WINAPK_HOST_X64 ? L" (Win.apk x64, emulated)" : L"");
 }
 
 // The primary display's adapter, as Device Manager names it.
@@ -5535,7 +5560,8 @@ const GoogleApp kGoogleApps[] = {
      L"Pick the newest version for Android 10 or later."},
     {"com.google.android.gms", L"Google Play services",
      L"https://www.apkmirror.com/apk/google-inc/google-play-services/",
-     L"Pick the x86_64 variant, nodpi, for Android 10 or later."},
+     WINAPK_HOST_ARM64 ? L"Pick the arm64-v8a variant, nodpi, for Android 10 or later."
+                       : L"Pick the x86_64 variant, nodpi, for Android 10 or later."},
     {"com.android.vending", L"Google Play Store", L"https://www.apkmirror.com/apk/google-inc/google-play-store/",
      L"Pick the nodpi variant, for Android 10 or later."},
 };
@@ -5732,11 +5758,16 @@ void setup_checked(std::unique_ptr<SetupCheck> c) {
                            L"it from the APKMirror page that Download opens.",
                            {file}),
                        setup_log());
-    } else if (!c->abis.empty() && (L"," + c->abis + L",").find(L",x86_64,") == std::wstring::npos) {
-        // Native code for ARM only: Win.apk runs x86_64 code, and translating Play services is no way to run it.
+    } else if (!c->abis.empty() && (L"," + c->abis + L",").find(WINAPK_HOST_ARM64 ? L",arm64-v8a," : L",x86_64,") ==
+                                       std::wstring::npos) {
+        // No native code for this PC (on x64, translating Play services is no way to run it).
         error_with_log(fmt(L"{0} was not installed", {tr(app->name)}),
-                       fmt(L"{0} has code only for ARM processors. On APKMirror, download its x86_64 variant.",
-                           {file}),
+                       WINAPK_HOST_ARM64
+                           ? fmt(L"{0} has no code for ARM64 processors. On APKMirror, download its arm64-v8a "
+                                 L"variant.",
+                                 {file})
+                           : fmt(L"{0} has code only for ARM processors. On APKMirror, download its x86_64 variant.",
+                                 {file}),
                        setup_log());
     } else if (c->sdk > 0 && c->min_sdk > c->sdk) {
         error_with_log(fmt(L"{0} was not installed", {tr(app->name)}),
@@ -6295,7 +6326,10 @@ std::vector<Section> settings_sections() {
         types = button_row(tr(L"Open .apk, .apkm, .xapk and .apks files with Win.apk"), L"", tr(L"Make default"),
                            [] { register_file_types(true); });
     }
-    out.push_back({tr(L"Apps"), {size, orient, folders, aot, desktop, types}, L""});
+    // Nothing is translated on ARM64.
+    std::vector<Row> apps_rows = {size, orient, folders, aot, desktop, types};
+    if (WINAPK_HOST_ARM64) apps_rows.erase(apps_rows.begin() + 3);
+    out.push_back({tr(L"Apps"), std::move(apps_rows), L""});
 
     out.push_back(google_account_section());
 
