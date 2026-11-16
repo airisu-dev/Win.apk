@@ -744,6 +744,13 @@ every such change is listed here:
   walks the whole view tree by reflection: NewPipe's feed got a couple of
   moves per drag, and its main thread was still searching at close. Not
   Windows-specific.
+- `runtime/java/android/graphics/Canvas.java`: the bilinear scaled blit
+  (`macapkScaledBlit`) keeps its result per source bitmap, source rect,
+  destination size and sub-pixel offset (`sbCachedBlit`), premultiplied, and
+  composites it on later draws; the source rect is kept too and compared on
+  each use. NewPipe's feed thumbnails were most of every frame (75 ms of a
+  110 ms frame at 2834x1693; 15 ms with it). `MACAPK_BITMAP_SCALE_CACHE=0`
+  turns it off. Not Windows-specific.
 - `runtime/java/com/macapk/loader/ActivityHost.java`: `macapkHostMinimized`,
   which the window calls when the user minimizes it: the resumed activity is
   paused and stopped, as a task moved to the back (the transitions of
