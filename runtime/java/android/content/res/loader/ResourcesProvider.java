@@ -58,10 +58,13 @@ public class ResourcesProvider implements AutoCloseable, java.io.Closeable {
         return new ResourcesProvider();
     }
 
-    // NOT IMPLEMENTED: loadOverlay(android.content.om.OverlayInfo). The whole
-    // android.content.om package (OverlayInfo, OverlayIdentifier,
-    // OverlayManager, OverlayManagerTransaction, FabricatedOverlay) is absent
-    // from this tree, so the parameter type does not exist and the method
-    // cannot be declared. It belongs with that package, not here.
+    // API 34. No overlay is ever listed (android.content.om has no service), so like
+    // the factories above this contributes nothing.
+    public static ResourcesProvider loadOverlay(android.content.om.OverlayInfo overlayInfo)
+            throws java.io.IOException {
+        if (overlayInfo == null) throw new NullPointerException("overlayInfo");
+        return new ResourcesProvider();
+    }
+
     @Override public void close() { }
 }

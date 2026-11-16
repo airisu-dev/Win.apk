@@ -533,6 +533,12 @@ every such change is listed here:
   `PackageManager.java`: `getArtManager()`, with runtime profiling off (no
   ART); the Play Store's profile upload job failed to start without it and
   its job scheduler retried it without pause.
+- `runtime/java/android/content/om/` (new), `res/loader/ResourcesProvider.java`:
+  API 34's overlay classes and `ResourcesProvider.loadOverlay`, with no overlay
+  service behind them (`getSystemService(OverlayManager.class)` is null). An app
+  that probes for overlays from `attachBaseContext` (Morphe's YouTube theme
+  patch) failed with `NoClassDefFoundError` and never left its boot screen. Not
+  Windows-specific.
 - `runtime/java/com/macapk/gms/GmsCli.java`, `GoogleAuthClient.java`: the
   `signin-master` verb (an account from a master token, on stdin); a refusal
   from Google's `/auth` is logged with its reason line, not only its status.
