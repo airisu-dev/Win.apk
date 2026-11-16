@@ -9,8 +9,9 @@
 // function writes past the end of it -- a stack object in the caller's
 // frame, so saved registers and the stack protector's canary go first. An
 // arm64 library's imports of these names bind to the wrappers here, which
-// call the shim with an x86_64 struct and convert. (On the Mac the shim is
-// built for arm64 and has no such gap.)
+// call the shim with an x86_64 struct and convert. Four of open's flags and
+// the system call numbers differ too. Used on either host, by the library's
+// machine. (On the Mac the shim is built for arm64 and has no such gap.)
 
 #include "winapk/arm64_guest.h"
 
@@ -134,6 +135,7 @@ WINAPK_GUEST_ABI void* a64_fts_open(char* const* argv, int options, void* compar
 using EpollCtl = int(WINAPK_GUEST_ABI*)(int, int, int, X86EpollEvent*);
 using EpollWait = int(WINAPK_GUEST_ABI*)(int, X86EpollEvent*, int, int);
 using EpollPwait = int(WINAPK_GUEST_ABI*)(int, X86EpollEvent*, int, int, const void*);
+using EpollPwait2 = int(WINAPK_GUEST_ABI*)(int, X86EpollEvent*, int, const void*, const void*);  // timespec, mask
 
 WINAPK_GUEST_ABI int a64_epoll_ctl(int epfd, int op, int fd, Arm64EpollEvent* ev) {
     static const auto fn = shim<EpollCtl>("epoll_ctl");
@@ -159,6 +161,52 @@ WINAPK_GUEST_ABI int a64_epoll_pwait(int epfd, Arm64EpollEvent* events, int max,
     std::vector<X86EpollEvent> x(max > 0 ? static_cast<size_t>(max) : 1);
     const int n = fn(epfd, x.data(), max, timeout, mask);
     return n > 0 ? copy_events(n, x, events) : n;
+}
+
+WINAPK_GUEST_ABI int a64_epoll_pwait2(int epfd, Arm64EpollEvent* events, int max, const void* ts, const void* mask) {
+    static const auto fn = shim<EpollPwait2>("epoll_pwait2");
+    std::vector<X86EpollEvent> x(max > 0 ? static_cast<size_t>(max) : 1);
+    const int n = fn(epfd, x.data(), max, ts, mask);
+    return n > 0 ? copy_events(n, x, events) : n;
+}
+
+// ---- open(2) flags --------------------------------------------------------------
+//
+// O_DIRECTORY, O_NOFOLLOW, O_DIRECT and O_LARGEFILE have asm-generic values on
+// arm64 (arm64's O_DIRECTORY is x86_64's O_DIRECT); the rest are the same.
+
+int to_x86_open_flags(int f) {
+    constexpr int kA64Directory = 040000, kA64Nofollow = 0100000, kA64Direct = 0200000, kA64Largefile = 0400000;
+    constexpr int kX86Direct = 040000, kX86Largefile = 0100000, kX86Directory = 0200000, kX86Nofollow = 0400000;
+    return (f & ~(kA64Directory | kA64Nofollow | kA64Direct | kA64Largefile)) |
+           ((f & kA64Directory) ? kX86Directory : 0) | ((f & kA64Nofollow) ? kX86Nofollow : 0) |
+           ((f & kA64Direct) ? kX86Direct : 0) | ((f & kA64Largefile) ? kX86Largefile : 0);
+}
+
+// open and openat are variadic; AAPCS64 passes the mode as a named argument.
+WINAPK_GUEST_ABI int a64_open(const char* path, int flags, unsigned mode) {
+    static const auto fn = shim<int(WINAPK_GUEST_ABI*)(const char*, int, unsigned)>("open");
+    return fn(path, to_x86_open_flags(flags), mode);
+}
+WINAPK_GUEST_ABI int a64_open_2(const char* path, int flags) {
+    static const auto fn = shim<int(WINAPK_GUEST_ABI*)(const char*, int)>("__open_2");
+    return fn(path, to_x86_open_flags(flags));
+}
+WINAPK_GUEST_ABI int a64_openat(int dirfd, const char* path, int flags, unsigned mode) {
+    static const auto fn = shim<int(WINAPK_GUEST_ABI*)(int, const char*, int, unsigned)>("openat");
+    return fn(dirfd, path, to_x86_open_flags(flags), mode);
+}
+WINAPK_GUEST_ABI int a64_openat_2(int dirfd, const char* path, int flags) {
+    static const auto fn = shim<int(WINAPK_GUEST_ABI*)(int, const char*, int)>("__openat_2");
+    return fn(dirfd, path, to_x86_open_flags(flags));
+}
+WINAPK_GUEST_ABI int a64_mkostemp(char* tmpl, int flags) {
+    static const auto fn = shim<int(WINAPK_GUEST_ABI*)(char*, int)>("mkostemp");
+    return fn(tmpl, to_x86_open_flags(flags));
+}
+WINAPK_GUEST_ABI int a64_mkostemps(char* tmpl, int suffix, int flags) {
+    static const auto fn = shim<int(WINAPK_GUEST_ABI*)(char*, int, int)>("mkostemps");
+    return fn(tmpl, suffix, to_x86_open_flags(flags));
 }
 
 // ---- code the guest writes itself ----------------------------------------------
@@ -242,6 +290,7 @@ bool known_syscall(uint64_t nr) {
         case 56: case 57: case 62: case 63: case 64: case 79: case 80: case 93: case 94:  // via libc functions
         case 96: case 132: case 134: case 135: case 167:
         case 48: case 129: case 130: case 131:  // faccessat; kill, tkill, tgkill
+        case 222: case 215: case 226:           // mmap, munmap, mprotect (mozjemalloc maps by raw call)
             return true;
         default:
             return false;
@@ -291,7 +340,8 @@ int64_t do_syscall(uint64_t nr, const uint64_t a[6]) {
                 return -1;
             }
             const auto f = shim<Fn3>("open");
-            return f(static_cast<int64_t>(a[1]), static_cast<int64_t>(a[2]), static_cast<int64_t>(a[3]));
+            return f(static_cast<int64_t>(a[1]), to_x86_open_flags(static_cast<int>(a[2])),
+                     static_cast<int64_t>(a[3]));
         }
         case 57: return shim<int64_t(WINAPK_GUEST_ABI*)(int64_t)>("close")(static_cast<int64_t>(a[0]));
         case 62: return fn3("lseek");
@@ -301,6 +351,13 @@ int64_t do_syscall(uint64_t nr, const uint64_t a[6]) {
             return a64_fstatat(static_cast<int>(a[0]), reinterpret_cast<const char*>(a[1]),
                                reinterpret_cast<Arm64Stat*>(a[2]), static_cast<int>(a[3]));
         case 80: return a64_fstat(static_cast<int>(a[0]), reinterpret_cast<Arm64Stat*>(a[1]));
+        // Through the wrappers above, which track executable mappings.
+        case 222:
+            return reinterpret_cast<int64_t>(a64_mmap(reinterpret_cast<void*>(a[0]), static_cast<size_t>(a[1]),
+                                                      static_cast<int>(a[2]), static_cast<int>(a[3]),
+                                                      static_cast<int>(a[4]), static_cast<int64_t>(a[5])));
+        case 215: return a64_munmap(reinterpret_cast<void*>(a[0]), static_cast<size_t>(a[1]));
+        case 226: return a64_mprotect(reinterpret_cast<void*>(a[0]), static_cast<size_t>(a[1]), static_cast<int>(a[2]));
         case 93: case 94:
             shim<void(WINAPK_GUEST_ABI*)(int64_t)>("_exit")(static_cast<int64_t>(a[0]));
             return 0;
@@ -309,9 +366,11 @@ int64_t do_syscall(uint64_t nr, const uint64_t a[6]) {
     }
 }
 
-WINAPK_GUEST_ABI int64_t a64_syscall(int64_t nr, int64_t a0, int64_t a1, int64_t a2, int64_t a3, int64_t a4) {
+// AAPCS64 passes variadic integers as named ones, so the sixth argument (mmap's offset) is a seventh parameter.
+WINAPK_GUEST_ABI int64_t a64_syscall(int64_t nr, int64_t a0, int64_t a1, int64_t a2, int64_t a3, int64_t a4,
+                                     int64_t a5) {
     const uint64_t a[6] = {static_cast<uint64_t>(a0), static_cast<uint64_t>(a1), static_cast<uint64_t>(a2),
-                           static_cast<uint64_t>(a3), static_cast<uint64_t>(a4), 0};
+                           static_cast<uint64_t>(a3), static_cast<uint64_t>(a4), static_cast<uint64_t>(a5)};
     if (!known_syscall(static_cast<uint64_t>(nr))) {
         *shim<int*(WINAPK_GUEST_ABI*)()>("__errno")() = 38;  // ENOSYS
         return -1;
@@ -346,6 +405,17 @@ void* abi_override(const char* name) {
         {"epoll_ctl", reinterpret_cast<void*>(&a64_epoll_ctl)},
         {"epoll_wait", reinterpret_cast<void*>(&a64_epoll_wait)},
         {"epoll_pwait", reinterpret_cast<void*>(&a64_epoll_pwait)},
+        {"epoll_pwait2", reinterpret_cast<void*>(&a64_epoll_pwait2)},
+        {"open", reinterpret_cast<void*>(&a64_open)},
+        {"open64", reinterpret_cast<void*>(&a64_open)},
+        {"__open_2", reinterpret_cast<void*>(&a64_open_2)},
+        {"openat", reinterpret_cast<void*>(&a64_openat)},
+        {"openat64", reinterpret_cast<void*>(&a64_openat)},
+        {"__openat_2", reinterpret_cast<void*>(&a64_openat_2)},
+        {"mkostemp", reinterpret_cast<void*>(&a64_mkostemp)},
+        {"mkostemp64", reinterpret_cast<void*>(&a64_mkostemp)},
+        {"mkostemps", reinterpret_cast<void*>(&a64_mkostemps)},
+        {"mkostemps64", reinterpret_cast<void*>(&a64_mkostemps)},
         {"syscall", reinterpret_cast<void*>(&a64_syscall)},
         {"mmap", reinterpret_cast<void*>(&a64_mmap)},
         {"mmap64", reinterpret_cast<void*>(&a64_mmap)},

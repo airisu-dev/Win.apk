@@ -1,15 +1,38 @@
 // bionic_guest.c -- guest-side test of the Windows Bionic shim (src/bionic/).
 //
 // Built like the other test guests (build_guest.sh): plain clang for
-// x86_64-linux-android, no NDK, the libc imports declared by hand. Every check
-// goes through the shim exactly as NDK code does, System V calls and Bionic
-// layouts included. bionic_test(dir) returns the number of failed checks and
-// prints one line per check; `dir` is a scratch directory.
+// x86_64-linux-android, and for aarch64-linux-android for an arm64 host, no NDK,
+// the libc imports declared by hand. Every check goes through the shim exactly as
+// NDK code does, the calling convention and Bionic's layouts included.
+// bionic_test(dir) returns the number of failed checks and prints one line per
+// check; `dir` is a scratch directory.
 
 typedef unsigned long size_t;
 typedef long ssize_t;
 typedef long off_t;
 typedef int wchar_t;  // 32-bit on Android
+
+// What differs between the two (src/arm64/arm64_abi.cpp): system call numbers,
+// two of open's flags, struct stat, and whether struct epoll_event is packed.
+#if defined(__aarch64__)
+enum { kSysMmap = 222, kSysMunmap = 215, kSysMprotect = 226, kSysGettid = 178, kSysFutex = 98,
+       kSysSchedGetaffinity = 123, kODirectory = 040000, kODirect = 0200000 };
+struct stat { unsigned long dev, ino; unsigned mode, nlink, uid, gid; unsigned long rdev, pad1;
+              long size; int blksize, pad2; long blocks, atime, atime_ns, mtime, mtime_ns, ctime, ctime_ns;
+              unsigned unused[2]; };
+#define WINAPK_EPOLL_PACKED
+#else
+enum { kSysMmap = 9, kSysMunmap = 11, kSysMprotect = 10, kSysGettid = 186, kSysFutex = 202,
+       kSysSchedGetaffinity = 204, kODirectory = 0200000, kODirect = 040000 };
+struct stat { unsigned long dev, ino, nlink; unsigned mode, uid, gid; int pad; unsigned long rdev;
+              long size, blksize, blocks, atime, atime_ns, mtime, mtime_ns, ctime, ctime_ns, unused[3]; };
+#define WINAPK_EPOLL_PACKED __attribute__((packed))
+#endif
+#if defined(__aarch64__)
+_Static_assert(sizeof(struct stat) == 128, "Bionic's struct stat on arm64");
+#else
+_Static_assert(sizeof(struct stat) == 144, "Bionic's struct stat on x86_64");
+#endif
 
 int printf(const char*, ...);
 int snprintf(char*, size_t, const char*, ...);
@@ -71,8 +94,6 @@ int mkdir(const char*, unsigned);
 int rmdir(const char*);
 char* getcwd(char*, size_t);
 int chdir(const char*);
-struct stat { unsigned long dev, ino, nlink; unsigned mode, uid, gid; int pad; unsigned long rdev;
-              long size, blksize, blocks, atime, atime_ns, mtime, mtime_ns, ctime, ctime_ns, unused[3]; };
 int stat(const char*, struct stat*);
 typedef struct DIR DIR;
 struct dirent { unsigned long d_ino; long d_off; unsigned short d_reclen; unsigned char d_type; char d_name[256]; };
@@ -268,23 +289,24 @@ static void test_locale_and_syscall(void) {
     void* loc = newlocale(63, "C", 0);
     check("setlocale and newlocale/uselocale for C and C.UTF-8",
           setlocale(6, "") != 0 && loc != 0 && uselocale(loc) == (void*)-1 && uselocale(0) == loc, 0);
-    check("syscall(gettid)", syscall(186) == gettid(), 0);
+    check("syscall(gettid)", syscall(kSysGettid) == gettid(), 0);
     unsigned word = 5;
     struct futex_timespec ts = {0, 2000000};
-    check("futex WAIT on a changed value fails with EAGAIN", syscall(202, &word, 128, 4, 0) == -1 && *__errno() == 11, 0);
-    check("futex WAIT times out with ETIMEDOUT", syscall(202, &word, 128, 5, &ts) == -1 && *__errno() == 110, 0);
-    check("futex WAKE succeeds", syscall(202, &word, 129, 1) >= 0, 0);
+    check("futex WAIT on a changed value fails with EAGAIN",
+          syscall(kSysFutex, &word, 128, 4, 0) == -1 && *__errno() == 11, 0);
+    check("futex WAIT times out with ETIMEDOUT", syscall(kSysFutex, &word, 128, 5, &ts) == -1 && *__errno() == 110, 0);
+    check("futex WAKE succeeds", syscall(kSysFutex, &word, 129, 1) >= 0, 0);
     check("an unknown syscall fails with ENOSYS", syscall(9999) == -1 && *__errno() == 38, 0);
     // mozjemalloc (Gecko) maps its chunks by raw call: SYS_mmap with the offset as a sixth
     // argument, then SYS_munmap of the misaligned head.
-    char* raw = (char*)syscall(9, 0L, 1L << 20, 3L, 0x22L, -1L, 0L);
+    char* raw = (char*)syscall(kSysMmap, 0L, 1L << 20, 3L, 0x22L, -1L, 0L);
     int mapped = raw != (char*)-1 && raw != 0 && raw[1 << 19] == 0;
     if (mapped) raw[1 << 19] = 3;
     check("syscall(SYS_mmap) maps zeroed, writable memory", mapped && raw[1 << 19] == 3, 0);
     check("syscall(SYS_munmap) of a mapping's head leaves the rest",
-          mapped && syscall(11, raw, 65536L) == 0 && raw[1 << 19] == 3, 0);
+          mapped && syscall(kSysMunmap, raw, 65536L) == 0 && raw[1 << 19] == 3, 0);
     check("syscall(SYS_mprotect), then SYS_munmap of the whole mapping",
-          mapped && syscall(10, raw + 65536, 65536L, 1L) == 0 && syscall(11, raw, 1L << 20) == 0, 0);
+          mapped && syscall(kSysMprotect, raw + 65536, 65536L, 1L) == 0 && syscall(kSysMunmap, raw, 1L << 20) == 0, 0);
 }
 
 // Pipes, eventfd, poll and epoll: the wake-up machinery of every event loop.
@@ -293,7 +315,7 @@ int eventfd(unsigned, int);
 struct pollfd { int fd; short events, revents; };
 int poll(struct pollfd*, unsigned long, int);
 int epoll_create1(int);
-struct __attribute__((packed)) epoll_event { unsigned events; unsigned long data; };
+struct WINAPK_EPOLL_PACKED epoll_event { unsigned events; unsigned long data; };
 int epoll_ctl(int, int, int, struct epoll_event*);
 int epoll_wait(int, struct epoll_event*, int, int);
 int fcntl(int, int, ...);
@@ -1230,6 +1252,8 @@ void siglongjmp(long*, int);
 void abort(void);
 void (*signal(int, void (*)(int)))(int);
 
+// x86_64 only (x86_64's ucontext_t); arm64's is arm64_signal_guest.c.
+#if defined(__x86_64__)
 typedef struct {  // siginfo_t: the union is 8-aligned, at +16
     int signo, err, code, pad;
     union {
@@ -1435,6 +1459,7 @@ static void test_signal_delivery(void) {
     sigaction(10, &dfl, 0);
     sigaction(12, &dfl, 0);
 }
+#endif  // __x86_64__
 
 // ---- *at() calls and Android's CA store ----------------------------------------
 // Dart's dart:io opens every file with openat and lists directories with
@@ -1448,8 +1473,13 @@ static void test_at_and_cacerts(const char* dir) {
     snprintf(path, sizeof path, "%s/at.txt", sub);
     int fd = open(path, 01 | 0100 | 01000, 0644);
     if (fd >= 0) { write(fd, "at!\n", 4); close(fd); }
-    const int dfd = open(sub, 0200000);  // O_DIRECTORY
+    const int dfd = open(sub, kODirectory);
     check("open(O_DIRECTORY)", dfd >= 0, 0);
+    fd = open(path, kODirectory);
+    check("open(O_DIRECTORY) of a file fails with ENOTDIR", fd == -1 && *__errno() == 20, 0);
+    fd = open(path, kODirect);
+    check("open(O_DIRECT) of a file opens it", fd >= 0, 0);
+    if (fd >= 0) close(fd);
     fd = openat(dfd, "at.txt", 0);
     memset(buf, 0, sizeof buf);
     check("openat relative to a directory descriptor", fd >= 0 && read(fd, buf, 4) == 4 && strcmp(buf, "at!\n") == 0,
@@ -1481,7 +1511,7 @@ static void test_at_and_cacerts(const char* dir) {
     unlink(path);
     rmdir(sub);
 
-    const int cfd = openat(-100, "/system/etc/security/cacerts", 0200000 | 02000000);  // O_DIRECTORY | O_CLOEXEC
+    const int cfd = openat(-100, "/system/etc/security/cacerts", kODirectory | 02000000);  // O_CLOEXEC
     check("/system/etc/security/cacerts opens", cfd >= 0, 0);
     d = cfd >= 0 ? fdopendir(cfd) : 0;
     int roots = 0, match = 0;
@@ -1539,6 +1569,16 @@ long lroundl(long double);
 long long llroundl(long double);
 long lrintl(long double);
 long long llrintl(long double);
+long double strtold(const char*, char**);
+long double wcstold(const wchar_t*, wchar_t**);
+long double powl(long double, long double);
+long double sqrtl(long double);
+// The sign, exponent and top 48 fraction bits of a binary128.
+static unsigned long quad_hi(long double v) {
+    union { long double ld; unsigned long w[2]; } u;
+    u.ld = v;
+    return u.w[1];
+}
 _Bool ATrace_isEnabled(void);
 void ATrace_beginSection(const char*);
 void ATrace_endSection(void);
@@ -1634,7 +1674,7 @@ static void test_sweep_gaps(const char* dir) {
     check("sched_getaffinity of this thread's id", sched_getaffinity(gettid(), sizeof mask, mask) == 0, 0);
     check("sched_getaffinity with a set that is not whole longs: EINVAL",
           sched_getaffinity(0, 4, mask) == -1 && *__errno() == 22, 0);
-    const long bytes = syscall(204, 0, sizeof mask, mask);  // the raw call returns the mask's size
+    const long bytes = syscall(kSysSchedGetaffinity, 0, sizeof mask, mask);  // the raw call returns the mask's size
     check("syscall(SYS_sched_getaffinity) returns the bytes written", bytes > 0 && bytes % 8 == 0, 0);
 
     fd_set set;
@@ -1776,6 +1816,14 @@ static void test_sweep_gaps(const char* dir) {
     check("lroundl / llroundl away from zero", lroundl(h) == 3 && llroundl(nh) == -3 && lroundl(tiny) == 0, 0);
     check("lrintl / llrintl to nearest even", lrintl(h) == 2 && llrintl(h3) == 4 && lrintl(nh) == -2, 0);
     check("lroundl out of range is LONG_MAX", lroundl(big) == 0x7fffffffffffffffL, 0);
+    // Compared by their bits: comparing binary128 values needs libgcc's soft-float.
+    check("strtold(\"1.5\") is binary128 1.5", quad_hi(strtold("1.5", 0)) == 0x3fff800000000000ul, 0);
+    check("strtold(\"-0.375\") is binary128 -0.375", quad_hi(strtold("-0.375", 0)) == 0xbffd800000000000ul, 0);
+    const wchar_t minus_two[] = {'-', '2', 0};
+    check("wcstold returns binary128, not the host's long double", quad_hi(wcstold(minus_two, 0)) == 0xc000000000000000ul,
+          0);
+    check("powl(2, 10) is 1024", quad_hi(powl(2.0L, 10.0L)) == 0x4009000000000000ul, 0);
+    check("sqrtl(2.25) is 1.5", quad_hi(sqrtl(2.25L)) == 0x3fff800000000000ul, 0);
 
     ATrace_beginSection("test");
     ATrace_endSection();
@@ -2079,7 +2127,9 @@ EXPORT int bionic_test(const char* dir) {
     test_rand48_statfs_getopt(dir);
     test_misc();
     test_signals_and_paths(dir);
+#if defined(__x86_64__)
     test_signal_delivery();
+#endif
     test_sweep_gaps(dir);
     test_missing_forms(dir);
     return failures;

@@ -1766,23 +1766,31 @@ long double quad_to_ld(GuestQuad q) {
     return neg ? -v : v;
 }
 
+}  // namespace
+
+// Through frexp, not the bytes: the host's long double is x87's 80 bits on x64 but a double on arm64. Both are
+// exact in binary128.
 GuestQuad ld_to_quad(long double v) {
-    uint64_t mantissa;
-    uint16_t sign_exp;
-    std::memcpy(&mantissa, &v, 8);
-    std::memcpy(&sign_exp, reinterpret_cast<const char*>(&v) + 8, 2);
-    uint64_t fraction = mantissa & 0x7fffffffffffffffull;
-    uint16_t se = sign_exp;
-    if ((se & 0x7fff) == 0 && mantissa != 0) {  // an 80-bit subnormal: normalize into binary128's range
-        const int sh = __builtin_clzll(mantissa);
-        const uint64_t norm = mantissa << sh;
-        fraction = norm & 0x7fffffffffffffffull;
-        se = static_cast<uint16_t>((se & 0x8000) | ((1 - sh) & 0x7fff));
+    const uint64_t sign = std::signbit(v) ? 1ull << 63 : 0;
+    uint64_t exp = 0, fraction = 0;  // binary128's biased exponent; the fraction's top 64 bits
+    if (std::isnan(v)) {
+        exp = 0x7fff;
+        fraction = 1ull << 63;  // a quiet NaN
+    } else if (std::isinf(v)) {
+        exp = 0x7fff;
+    } else if (v != 0) {
+        int e = 0;
+        const long double m = std::frexp(std::fabs(v), &e);              // in [0.5, 1)
+        const uint64_t sig = static_cast<uint64_t>(std::ldexp(m, 64));  // the leading 1 at bit 63, exactly
+        exp = static_cast<uint64_t>(e - 1 + 16383);
+        fraction = sig << 1;  // binary128's leading 1 is implicit
     }
-    GuestQuad q = {static_cast<long long>(fraction << 49),
-                   static_cast<long long>((static_cast<uint64_t>(se) << 48) | (fraction >> 15))};
+    GuestQuad q = {static_cast<long long>(fraction << 48),
+                   static_cast<long long>(sign | (exp << 48) | (fraction >> 16))};
     return q;
 }
+
+namespace {
 
 #define WINAPK_QUAD1(name, expr) \
     WINAPK_GUEST_ABI GuestQuad m_##name(GuestQuad qx) { const long double x = quad_to_ld(qx); return ld_to_quad(expr); }

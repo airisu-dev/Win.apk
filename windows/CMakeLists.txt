@@ -156,14 +156,16 @@ target_link_libraries(winapk-arm64-test PRIVATE winapk_loader)
 target_include_directories(winapk-arm64-test PRIVATE test/guest)
 target_compile_options(winapk-arm64-test PRIVATE ${WINAPK_CX16})
 
+if(NOT WINAPK_HOST_ARM64)
 # The translation's files under racing and killed processes
 # (include/winapk/aot_files.h), test/aot_cache_test.cpp. The DLL is its
-# stand-in for a translation, and must be next to it.
+# stand-in for a translation, and must be next to it. x64 only.
 add_library(winapk-aot-test-dll SHARED test/aot_cache_dll.cpp)
 set_target_properties(winapk-aot-test-dll PROPERTIES PREFIX "")
 add_executable(winapk-aot-cache-test test/aot_cache_test.cpp)
 target_link_libraries(winapk-aot-cache-test PRIVATE winapk_loader)
 add_dependencies(winapk-aot-cache-test winapk-aot-test-dll)
+endif()
 
 # A library's translation stamp (include/winapk/aot_stamp.h): its line, what the loader refuses, when the
 # worker has a step to take. No file and no Windows call in it. test/aot_stamp_test.cpp.
@@ -175,9 +177,10 @@ target_include_directories(winapk-aot-stamp-test PRIVATE include)
 add_executable(winapk-applink-test test/applink_match_test.cpp)
 target_include_directories(winapk-applink-test PRIVATE host)
 
+if(NOT WINAPK_HOST_ARM64)
 # The translation's crash guard (host/aot_guard.h) through the real crash path,
 # test/aot_guard_test.cpp. The DLL is its stand-in for a translation, and must
-# be next to it.
+# be next to it. x64 only.
 add_library(winapk-aot-guard-dll SHARED test/aot_guard_dll.cpp)
 set_target_properties(winapk-aot-guard-dll PROPERTIES PREFIX "")
 target_include_directories(winapk-aot-guard-dll PRIVATE include)
@@ -185,6 +188,7 @@ add_executable(winapk-aot-guard-test test/aot_guard_test.cpp host/aot_guard.cpp 
 target_include_directories(winapk-aot-guard-test PRIVATE host)
 target_link_libraries(winapk-aot-guard-test PRIVATE winapk_loader)
 add_dependencies(winapk-aot-guard-test winapk-aot-guard-dll)
+endif()
 
 # Class-data sharing's pure parts (host/cds_util.h): the patch digest
 # bake_jre.sh records, the flags it drops, the archive's key, the class list
@@ -214,11 +218,11 @@ if(MINGW)
   target_link_options(winapk-bionic-test PRIVATE -static)
   target_link_options(winapk-crash-test PRIVATE -static -municode)
   target_link_options(winapk-arm64-test PRIVATE -static)
-  target_link_options(winapk-aot-cache-test PRIVATE -static -municode)
-  target_link_options(winapk-aot-test-dll PRIVATE -static)
-  target_link_options(winapk-aot-guard-test PRIVATE -static -municode)
-  target_link_options(winapk-aot-guard-dll PRIVATE -static)
   if(TARGET winapk-aot)
+    target_link_options(winapk-aot-cache-test PRIVATE -static -municode)
+    target_link_options(winapk-aot-test-dll PRIVATE -static)
+    target_link_options(winapk-aot-guard-test PRIVATE -static -municode)
+    target_link_options(winapk-aot-guard-dll PRIVATE -static)
     target_link_options(winapk-aot PRIVATE -static)
   endif()
   target_link_options(winapk-x18scan PRIVATE -static)
