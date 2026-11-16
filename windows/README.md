@@ -737,6 +737,13 @@ every such change is listed here:
   `hostImeInline` and `hostImeAnchor` (composed text and an input method's
   composition through the focused field's `InputConnection`). Upstream's
   callers and its single-pointer path are unchanged.
+- `runtime/java/com/macapk/loader/TouchDispatcher.java`: the search for a game
+  engine's renderer (`ensureRendererResolved`) is not repeated on every touch
+  event of an activity that has none, only on a touch-down, and each view
+  class's candidate fields are found once (`RENDERER_FIELDS`). The search
+  walks the whole view tree by reflection: NewPipe's feed got a couple of
+  moves per drag, and its main thread was still searching at close. Not
+  Windows-specific.
 - `runtime/java/com/macapk/loader/ActivityHost.java`: `macapkHostMinimized`,
   which the window calls when the user minimizes it: the resumed activity is
   paused and stopped, as a task moved to the back (the transitions of
