@@ -336,7 +336,7 @@ jobs:
       - uses: msys2/setup-msys2@v2
         with:
           msystem: CLANGARM64
-          release: false
+          pacboy: clang:p
       - uses: actions/download-artifact@v4
         with:
           name: guest-libs

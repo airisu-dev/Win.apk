@@ -56,6 +56,8 @@
 #include <utility>
 #include <vector>
 
+#include <windows.h>
+
 #define ISA_EXPORT static __attribute__((noinline, used))
 #include "arm64_isa.c"
 #define BENCH_HOST
