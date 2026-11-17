@@ -3898,7 +3898,7 @@ public final class TouchDispatcher {
      *  any engine reached through this path gains multi-touch. */
     private static void dispatchToRenderer(Activity active, int action,
                                            float px, float py, int pointerId) {
-        ensureRendererResolved(active);
+        ensureRendererResolved(active, action);
         if (s_renderer == null || s_queueServiced) return;
         if (s_appQueueOnly && forkQueueDelivers(s_owner)) return;
         // v1.0.996: px/py arrive in DISPLAY space (doDispatch's Y-flip is against
@@ -3965,8 +3965,16 @@ public final class TouchDispatcher {
      *  SurfaceView (or subclass) with a mRenderer / renderer field whose
      *  value declares handleActionDown(int,float,float). Caches results
      *  for fast repeat dispatch. */
-    private static void ensureRendererResolved(Activity active) {
+    // Win.apk: an activity whose tree had no renderer when last searched. The
+    // search walks the whole tree by reflection; done on every MotionEvent it
+    // left a long list (NewPipe's feed) a couple of moves per drag, and the
+    // main thread still inside it at close. Searched again on a touch-down
+    // only, when an engine's view may have joined the tree.
+    private static volatile Activity s_noRendererActivity;
+
+    private static void ensureRendererResolved(Activity active, int action) {
         if (s_renderer != null && s_boundActivity == active) return;
+        if (s_noRendererActivity == active && action != MotionEvent.ACTION_DOWN) return;
         s_renderer = null;
         s_handleDown = s_handleUp = s_handleMove = null;
         s_boundActivity = null;
@@ -3975,6 +3983,7 @@ public final class TouchDispatcher {
         View root = active.macapkContentView();
         if (root == null) return;
         Object[] ownerAndRenderer = findRendererInTree(root);
+        s_noRendererActivity = ownerAndRenderer == null ? active : null;
         if (ownerAndRenderer == null) return;
         View owner = (View) ownerAndRenderer[0];
         Object found = ownerAndRenderer[1];
@@ -4068,27 +4077,39 @@ public final class TouchDispatcher {
         return null;
     }
 
-    private static Object extractRenderer(View v) {
-        Class<?> cls = v.getClass();
-        while (cls != null && cls != Object.class) {
-            for (Field f : cls.getDeclaredFields()) {
-                String name = f.getName();
-                // Heuristic: cocos2d-x stores its renderer in mRenderer.
-                // Other engines might use `renderer` / `mGameRenderer`.
-                if (!name.equals("mRenderer") && !name.equals("renderer")
-                    && !name.equals("mGameRenderer")) continue;
-                try {
-                    f.setAccessible(true);
-                    Object val = f.get(v);
-                    if (val == null) continue;
-                    // Validate: does it have handleActionDown?
-                    if (findMethod(val.getClass(), "handleActionDown",
-                                    new Class<?>[]{int.class, float.class, float.class}) != null) {
-                        return val;
-                    }
-                } catch (Throwable ignore) {}
+    // Win.apk: each class's candidate fields, found once (getDeclaredFields up
+    // the hierarchy per view and per search was most of the search's cost).
+    private static final ClassValue<Field[]> RENDERER_FIELDS = new ClassValue<Field[]>() {
+        @Override protected Field[] computeValue(Class<?> type) {
+            java.util.ArrayList<Field> found = new java.util.ArrayList<>();
+            for (Class<?> cls = type; cls != null && cls != Object.class; cls = cls.getSuperclass()) {
+                for (Field f : cls.getDeclaredFields()) {
+                    String name = f.getName();
+                    // Heuristic: cocos2d-x stores its renderer in mRenderer.
+                    // Other engines might use `renderer` / `mGameRenderer`.
+                    if (!name.equals("mRenderer") && !name.equals("renderer")
+                        && !name.equals("mGameRenderer")) continue;
+                    try {
+                        f.setAccessible(true);
+                        found.add(f);
+                    } catch (Throwable ignore) {}
+                }
             }
-            cls = cls.getSuperclass();
+            return found.toArray(new Field[0]);
+        }
+    };
+
+    private static Object extractRenderer(View v) {
+        for (Field f : RENDERER_FIELDS.get(v.getClass())) {
+            try {
+                Object val = f.get(v);
+                if (val == null) continue;
+                // Validate: does it have handleActionDown?
+                if (findMethod(val.getClass(), "handleActionDown",
+                                new Class<?>[]{int.class, float.class, float.class}) != null) {
+                    return val;
+                }
+            } catch (Throwable ignore) {}
         }
         return null;
     }

@@ -5387,6 +5387,11 @@ public class Canvas {
         if (X1 <= X0 || Y1 <= Y0) return true;   // nothing visible: Java2D draws nothing
         final int W = image.getWidth(), SW = src.getWidth();
         final double kx = (sx1 - sx0) / (DX1 - DX0), ky = (sy1 - sy0) / (DY1 - DY0);
+        if (blend == null && SB_CACHE
+                && sbCachedBlit(dd, W, src, sd, SW, sx0, sy0, sx1, sy1, DX0, DY0, DX1, DY1, kx, ky,
+                                X0, X1, Y0, Y1, extraA)) {
+            return true;
+        }
         // Columns: the two source columns each destination column blends, and the
         // weight (TransformHelper: xwhole/xfract of a 32.32 coordinate stepped by
         // dxdx from the span's first pixel centre, minus 0.5 for bilinear; the
@@ -5444,6 +5449,7 @@ public class Canvas {
     private static final class SbJob {
         final int[] dd, sd, c0, c1, fx; final int W, SW, sxFrom, sy0, ch, span, X0, n, extraA;
         final double DY0, ky; final BlendComposite.Ctx blend; final boolean zeroKeeps;
+        boolean store;   // write the premultiplied result into dd instead of compositing (sbCachedBlit)
         SbJob(int[] dd, int W, int[] sd, int SW, int sxFrom, int sy0, int ch, int span, int X0, int n,
               int[] c0, int[] c1, int[] fx, double DY0, double ky, BlendComposite.Ctx blend,
               boolean zeroKeeps, int extraA) {
@@ -5506,7 +5512,8 @@ public class Canvas {
                     continue;
                 }
                 final int base = y * W + X0;
-                if (blend == null) sbRowSrcOver(dd, base, n, c0, c1, fx, va, vr, vg, vb, extraA);
+                if (store) sbRowStore(dd, base, n, c0, c1, fx, va, vr, vg, vb);
+                else if (blend == null) sbRowSrcOver(dd, base, n, c0, c1, fx, va, vr, vg, vb, extraA);
                 else sbRowBlend(dd, base, n, c0, c1, fx, va, vr, vg, vb, blend, zeroKeeps, memo);
             }
         }
@@ -5559,6 +5566,186 @@ public class Canvas {
             } while (k < n && c0[k] == i0 && c1[k] == i1);
         }
     }
+    /** sbRowSrcOver's interpolation, stored as IntArgbPre (sbCachedBlit's block). */
+    private static void sbRowStore(int[] dd, int base, int n, int[] c0, int[] c1, int[] fx,
+                                   int[] va, int[] vr, int[] vg, int[] vb) {
+        int k = 0;
+        while (k < n) {
+            final int i0 = c0[k], i1 = c1[k];
+            final int A0 = (va[i0] << 8) + (1 << 15), dA = va[i1] - va[i0];
+            final int R0 = (vr[i0] << 8) + (1 << 15), dR = vr[i1] - vr[i0];
+            final int G0 = (vg[i0] << 8) + (1 << 15), dG = vg[i1] - vg[i0];
+            final int B0 = (vb[i0] << 8) + (1 << 15), dB = vb[i1] - vb[i0];
+            do {
+                final int f = fx[k];
+                final int A = (A0 + dA * f) >> 16;
+                if (A != 0) {
+                    dd[base + k] = (A << 24) | (((R0 + dR * f) >> 16) << 16)
+                                 | (((G0 + dG * f) >> 16) << 8) | ((B0 + dB * f) >> 16);
+                }
+                k++;
+            } while (k < n && c0[k] == i0 && c1[k] == i1);
+        }
+    }
+
+    // ---- Win.apk: the scaled-blit cache ----
+    //
+    // A list redraws its thumbnails every frame at the same size from the same
+    // bitmaps, and the bilinear pass above was most of a frame: NewPipe's feed at
+    // 2834x1693, 58% of the main thread while its drawer slid over it. The
+    // scaled result depends only on the source pixels, the source rect, the
+    // destination size and the destination's sub-pixel offset, so it is kept,
+    // unclipped and premultiplied, as a block that later draws composite (an
+    // opaque row is a copy). The source rect is kept too and compared on every
+    // use: a bitmap drawn into since is scaled again. SrcOver only (a blend
+    // composite takes the path above); MACAPK_BITMAP_SCALE_CACHE=0 turns it off.
+    static final boolean SB_CACHE = !"0".equals(System.getenv("MACAPK_BITMAP_SCALE_CACHE"));
+    private static final long SB_CACHE_BYTES = 96L << 20;
+    private static final int SB_CACHE_MAX_PX = 4 << 20;
+    private static final int SB_NO_CLIP = 1 << 29;
+
+    private static final class SbKey {
+        final BufferedImage src;
+        final int sx0, sy0, sx1, sy1;
+        final long w, h, fx, fy;   // destination size and sub-pixel offset, as double bits
+        SbKey(BufferedImage src, int sx0, int sy0, int sx1, int sy1, double w, double h, double fx, double fy) {
+            this.src = src; this.sx0 = sx0; this.sy0 = sy0; this.sx1 = sx1; this.sy1 = sy1;
+            this.w = Double.doubleToLongBits(w); this.h = Double.doubleToLongBits(h);
+            this.fx = Double.doubleToLongBits(fx); this.fy = Double.doubleToLongBits(fy);
+        }
+        @Override public boolean equals(Object o) {
+            return o instanceof SbKey k && k.src == src && k.sx0 == sx0 && k.sy0 == sy0 && k.sx1 == sx1
+                && k.sy1 == sy1 && k.w == w && k.h == h && k.fx == fx && k.fy == fy;
+        }
+        @Override public int hashCode() {
+            int r = System.identityHashCode(src);
+            r = 31 * r + sx0; r = 31 * r + sy0; r = 31 * r + sx1; r = 31 * r + sy1;
+            r = 31 * r + Long.hashCode(w); r = 31 * r + Long.hashCode(h);
+            r = 31 * r + Long.hashCode(fx); r = 31 * r + Long.hashCode(fy);
+            return r;
+        }
+    }
+    private static final class SbEntry {
+        final int[] px;          // bw x bh, IntArgbPre
+        final int bw, bh, ox, oy; // the block's top-left, from floor(DX0), floor(DY0)
+        final boolean[] opaqueRow;
+        final int[] srcCopy;     // the source rect, row after row
+        final long bytes;
+        SbEntry(int[] px, int bw, int bh, int ox, int oy, boolean[] opaqueRow, int[] srcCopy) {
+            this.px = px; this.bw = bw; this.bh = bh; this.ox = ox; this.oy = oy;
+            this.opaqueRow = opaqueRow; this.srcCopy = srcCopy;
+            this.bytes = 4L * (px.length + srcCopy.length) + bh;
+        }
+    }
+    private static final java.util.LinkedHashMap<SbKey, SbEntry> sSbCache =
+        new java.util.LinkedHashMap<>(64, 0.75f, true);
+    private static long sSbCacheBytes;
+
+    private static boolean sbSourceSame(int[] sd, int SW, int sx0, int sy0, int cw, int ch, int[] copy) {
+        if (sx0 == 0 && cw == SW) return java.util.Arrays.equals(sd, sy0 * SW, (sy0 + ch) * SW, copy, 0, cw * ch);
+        for (int r = 0; r < ch; r++) {
+            final int s = (sy0 + r) * SW + sx0;
+            if (!java.util.Arrays.equals(sd, s, s + cw, copy, r * cw, (r + 1) * cw)) return false;
+        }
+        return true;
+    }
+
+    /** The draw macapkScaledBlit is about to make, from the cache: false when the
+     *  cache does not take it (then nothing was touched). */
+    private static boolean sbCachedBlit(int[] dd, int W, BufferedImage src, int[] sd, int SW,
+                                        int sx0, int sy0, int sx1, int sy1,
+                                        double DX0, double DY0, double DX1, double DY1, double kx, double ky,
+                                        int X0, int X1, int Y0, int Y1, int extraA) {
+        final double flx = Math.floor(DX0), fly = Math.floor(DY0);
+        if (!(Math.abs(flx) < SB_NO_CLIP && Math.abs(fly) < SB_NO_CLIP)) return false;
+        // The unclipped coverage, by the same pixel-centre rule.
+        final int Xf0 = sbEdge(DX0, -SB_NO_CLIP, SB_NO_CLIP, true), Xf1 = sbEdge(DX1, -SB_NO_CLIP, SB_NO_CLIP, false);
+        final int Yf0 = sbEdge(DY0, -SB_NO_CLIP, SB_NO_CLIP, true), Yf1 = sbEdge(DY1, -SB_NO_CLIP, SB_NO_CLIP, false);
+        if (Xf0 == Integer.MIN_VALUE || Xf1 == Integer.MIN_VALUE
+                || Yf0 == Integer.MIN_VALUE || Yf1 == Integer.MIN_VALUE) return false;
+        final int bw = Xf1 - Xf0, bh = Yf1 - Yf0, cw = sx1 - sx0, ch = sy1 - sy0;
+        if (bw <= 0 || bh <= 0 || (long) bw * bh > SB_CACHE_MAX_PX) return false;
+        if ((long) cw * ch > 4L * bw * bh) return false;   // comparing the source would cost more than scaling
+        if (X0 < Xf0 || X1 > Xf1 || Y0 < Yf0 || Y1 > Yf1) return false;
+        final SbKey key = new SbKey(src, sx0, sy0, sx1, sy1, DX1 - DX0, DY1 - DY0, DX0 - flx, DY0 - fly);
+        SbEntry e;
+        synchronized (sSbCache) { e = sSbCache.get(key); }
+        if (e != null && (e.bw != bw || e.bh != bh || e.ox != Xf0 - (int) flx || e.oy != Yf0 - (int) fly
+                          || !sbSourceSame(sd, SW, sx0, sy0, cw, ch, e.srcCopy))) {
+            e = null;
+        }
+        if (e == null) {
+            e = sbBuild(sd, SW, sx0, sy0, sx1, sy1, DX0 - Xf0, DY0 - Yf0, kx, ky, bw, bh, cw, ch);
+            final SbEntry put = new SbEntry(e.px, e.bw, e.bh, Xf0 - (int) flx, Yf0 - (int) fly, e.opaqueRow, e.srcCopy);
+            e = put;
+            synchronized (sSbCache) {
+                final SbEntry old = sSbCache.put(key, put);
+                if (old != null) sSbCacheBytes -= old.bytes;
+                sSbCacheBytes += put.bytes;
+                final java.util.Iterator<SbEntry> it = sSbCache.values().iterator();
+                while (sSbCacheBytes > SB_CACHE_BYTES && it.hasNext()) {
+                    final SbEntry ev = it.next();
+                    if (ev == put) continue;
+                    sSbCacheBytes -= ev.bytes;
+                    it.remove();
+                }
+            }
+        }
+        final int[] px = e.px;
+        final int n = X1 - X0;
+        for (int y = Y0; y < Y1; y++) {
+            final int r = y - Yf0;
+            final int from = r * bw + (X0 - Xf0), base = y * W + X0;
+            if (extraA == 255 && e.opaqueRow[r]) {
+                System.arraycopy(px, from, dd, base, n);
+                continue;
+            }
+            for (int k = 0; k < n; k++) {
+                final int p = px[from + k];
+                final int A = p >>> 24;
+                if (A == 0) continue;
+                if (A == 255 && extraA == 255) dd[base + k] = p;
+                else dd[base + k] = sbSrcOverPreToArgb(A, (p >> 16) & 0xff, (p >> 8) & 0xff, p & 0xff, extraA,
+                                                       dd[base + k]);
+            }
+        }
+        return true;
+    }
+
+    /** The whole bw x bh block of a scaled blit whose destination origin is
+     *  (DX0, DY0) relative to the block, premultiplied (ox/oy are the caller's). */
+    private static SbEntry sbBuild(int[] sd, int SW, int sx0, int sy0, int sx1, int sy1,
+                                   double DX0, double DY0, double kx, double ky, int bw, int bh, int cw, int ch) {
+        final int[] c0 = new int[bw], c1 = new int[bw], fx = new int[bw];
+        final long xl0 = sbFix((0.5 - DX0) * kx - 0.5), dxl = sbFix(kx);
+        int imin = Integer.MAX_VALUE, imax = Integer.MIN_VALUE;
+        for (int k = 0; k < bw; k++) {
+            final long xl = xl0 + k * dxl;
+            final int xw = (int) (xl >> 32);
+            fx[k] = (int) (xl >>> 24) & 0xff;
+            final int a = Math.max(0, Math.min(cw - 1, xw));
+            final int b = (xw >= 0 && xw < cw - 1) ? xw + 1 : a;
+            c0[k] = a; c1[k] = b;
+            if (a < imin) imin = a;
+            if (b > imax) imax = b;
+        }
+        for (int k = 0; k < bw; k++) { c0[k] -= imin; c1[k] -= imin; }
+        final int[] px = new int[bw * bh];
+        final SbJob job = new SbJob(px, bw, sd, SW, sx0 + imin, sy0, ch, imax - imin + 1, 0, bw, c0, c1, fx,
+                                    DY0, ky, null, true, 255);
+        job.store = true;
+        job.rows(0, bh);
+        final boolean[] opaque = new boolean[bh];
+        for (int r = 0; r < bh; r++) {
+            boolean all = true;
+            for (int k = r * bw, end = k + bw; k < end && all; k++) all = (px[k] >>> 24) == 255;
+            opaque[r] = all;
+        }
+        final int[] copy = new int[cw * ch];
+        for (int r = 0; r < ch; r++) System.arraycopy(sd, (sy0 + r) * SW + sx0, copy, r * cw, cw);
+        return new SbEntry(px, bw, bh, 0, 0, opaque, copy);
+    }
+
     /** One destination row through a BlendComposite. blendPx is a pure function of
      *  (source, destination), and a pattern over a smooth gradient repeats the same
      *  pair along a run, so a one-entry memo = {lastS, lastD, lastR} skips it. */
